@@ -1,6 +1,6 @@
 # TallyBook
 
-**Download:** [tallybook.online](https://tallybook.online) · [Releases](https://github.com/techardentlabs/tallybook-releases/releases/latest) (macOS, Windows, Linux)
+**Download:** [tallybook.online](https://tallybook.online) · [Releases](https://github.com/techardentlabs/tallybook/releases/latest) (macOS, Windows, Linux)
 
 A keyboard-first accounting application modelled on TallyPrime: Gateway menu, Tally's shortcuts, bill-wise tracking, GST, and import/export of Tally XML so existing users can switch.
 

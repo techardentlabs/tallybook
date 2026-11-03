@@ -40,9 +40,9 @@ Monthly cycle:
 ## How a release is built
 
 1. `pnpm run version:minor` (or patch/major), move the `[Unreleased]` notes under the new heading, commit to `main`.
-2. `git tag vX.Y.Z && git push origin main --tags`.
-3. The source repo (`techardentlabs/tallybook`) is private. The **Release** workflow creates a draft release in the public repo `techardentlabs/tallybook-releases` from the changelog section, builds on macOS (universal), Windows and Linux in parallel, uploads the installers and the signed updater files plus `latest.json`, then publishes the release.
-4. Installed apps check `https://github.com/techardentlabs/tallybook-releases/releases/latest/download/latest.json` four seconds after start-up; users can also press F1 then Alt+U. Updates are verified against the public key in `tauri.conf.json` before they install.
+2. `git push origin main`. Pushing a new version in `tauri.conf.json` is all it takes; no manual tag is needed.
+3. The **Release** workflow sees a version that has no release yet, creates the `vX.Y.Z` tag and a draft release from the changelog section, builds on macOS (universal), Windows and Linux in parallel, uploads the installers and the signed updater files plus `latest.json`, then publishes the release.
+4. Installed apps check `https://github.com/techardentlabs/tallybook/releases/latest/download/latest.json` four seconds after start-up; users can also press F1 then Alt+U. Updates are verified against the public key in `tauri.conf.json` before they install.
 5. tallybook.online reads the latest release from the GitHub API, so its download buttons update automatically.
 
 Artifacts per release:
@@ -59,7 +59,6 @@ Artifacts per release:
 |---|---|
 | `TAURI_SIGNING_PRIVATE_KEY` | Signs update packages. The key file lives outside the repo (`~/.tauri/tallybook.key`). Back it up: if it is lost, installed apps can no longer be updated. |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Empty for the current key. |
-| `RELEASES_TOKEN` | Fine-grained GitHub token with Contents: read and write on `techardentlabs/tallybook-releases`; used to create the release and upload files there. |
 
 Code signing is not set up yet. To remove the macOS "unidentified developer" and Windows SmartScreen warnings, add an Apple Developer ID certificate (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) and a Windows code-signing certificate, then pass them to `tauri-action`.
 
@@ -74,4 +73,6 @@ Code signing is not set up yet. To remove the macOS "unidentified developer" and
 
 ## Website
 
-The tallybook.online site lives in the public `techardentlabs/tallybook-releases` repo (`site/`), deployed to GitHub Pages by its **Website** workflow. The custom domain is `tallybook.online`.
+The tallybook.online site lives in `techardentlabs/tallybook-releases` (`site/`), deployed to GitHub Pages by its **Website** workflow. It reads the latest release of `techardentlabs/tallybook` from the GitHub API. The custom domain is `tallybook.online`.
+
+You can also run the **Release** workflow by hand from the Actions tab; it does nothing if the current version is already released.

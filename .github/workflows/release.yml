@@ -2,36 +2,56 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+    paths: ['apps/desktop/src-tauri/tauri.conf.json']
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  create-release:
+  prepare:
     runs-on: ubuntu-latest
     outputs:
+      tag: ${{ steps.version.outputs.tag }}
       release_id: ${{ steps.release.outputs.id }}
+      skip: ${{ steps.version.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
-      - id: notes
+      - id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          v="${GITHUB_REF_NAME#v}"
+          v=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+          if gh release view "v$v" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$v already exists, nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.version.outputs.skip == 'false'
+        run: |
+          v="${{ steps.version.outputs.tag }}"
+          v="${v#v}"
           awk -v v="$v" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
-          [ -s notes.md ] || echo "TallyBook $GITHUB_REF_NAME" > notes.md
+          [ -s notes.md ] || echo "TallyBook v$v" > notes.md
       - id: release
+        if: steps.version.outputs.skip == 'false'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.RELEASES_TOKEN }}
           script: |
             const fs = require('fs');
-            const tag = context.ref.replace('refs/tags/', '');
+            const tag = '${{ steps.version.outputs.tag }}';
             const { data } = await github.rest.repos.createRelease({
-              owner: 'techardentlabs',
-              repo: 'tallybook-releases',
+              owner: context.repo.owner,
+              repo: context.repo.repo,
               tag_name: tag,
-              target_commitish: 'main',
+              target_commitish: context.sha,
               name: `TallyBook ${tag}`,
               body: fs.readFileSync('notes.md', 'utf8'),
               draft: true,
@@ -40,7 +60,8 @@ jobs:
             core.setOutput('id', data.id);
 
   build:
-    needs: create-release
+    needs: prepare
+    if: needs.prepare.outputs.skip == 'false'
     strategy:
       fail-fast: false
       matrix:
@@ -73,28 +94,25 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
-          owner: techardentlabs
-          repo: tallybook-releases
-          releaseId: ${{ needs.create-release.outputs.release_id }}
+          releaseId: ${{ needs.prepare.outputs.release_id }}
           includeUpdaterJson: true
           args: ${{ matrix.args }}
 
   publish:
-    needs: [create-release, build]
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.RELEASES_TOKEN }}
           script: |
             await github.rest.repos.updateRelease({
-              owner: 'techardentlabs',
-              repo: 'tallybook-releases',
-              release_id: Number('${{ needs.create-release.outputs.release_id }}'),
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: Number('${{ needs.prepare.outputs.release_id }}'),
               draft: false,
             });
