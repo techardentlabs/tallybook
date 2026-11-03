@@ -314,21 +314,34 @@ export async function dayBook(db: Db, from: string, to: string, typeId?: number 
     clause = ' AND v.type_id = ?';
     params.push(typeId);
   }
-  const vouchers = await db.select<{ id: number; date: string; number: string; type: string; cancelled: number; total: number }>(
-    `SELECT v.id, v.date, v.number, v.cancelled, t.name AS type,
+  const vouchers = await db.select<{ id: number; date: string; number: string; type: string; parent: string; party: string | null; cancelled: number; total: number }>(
+    `SELECT v.id, v.date, v.number, v.cancelled, t.name AS type, t.parent, p.name AS party,
        COALESCE((SELECT SUM(amount) FROM entries WHERE voucher_id = v.id AND amount > 0), 0) AS total
-     FROM vouchers v JOIN voucher_types t ON t.id = v.type_id
+     FROM vouchers v JOIN voucher_types t ON t.id = v.type_id LEFT JOIN ledgers p ON p.id = v.party_id
      WHERE v.date >= ? AND v.date <= ?${clause}
      ORDER BY v.date, v.id`,
     params
   );
-  const first = await db.select<{ voucher_id: number; ledger: string }>(
-    `SELECT e.voucher_id, l.name AS ledger FROM entries e JOIN ledgers l ON l.id = e.ledger_id
-     WHERE e.id IN (SELECT MIN(id) FROM entries e2 WHERE e2.amount > 0 GROUP BY e2.voucher_id)
-       AND e.voucher_id IN (SELECT id FROM vouchers WHERE date >= ? AND date <= ?)`,
+  const lines = await db.select<{ voucher_id: number; amount: number; ledger: string; grp: string }>(
+    `SELECT e.voucher_id, e.amount, l.name AS ledger, g.name AS grp FROM entries e JOIN ledgers l ON l.id = e.ledger_id JOIN groups g ON g.id = l.group_id
+     WHERE e.voucher_id IN (SELECT id FROM vouchers WHERE date >= ? AND date <= ?)
+     ORDER BY e.voucher_id, e.seq, e.id`,
     [from, to]
   );
-  const byV = new Map(first.map((f) => [f.voucher_id, f.ledger]));
+  const byVoucher = new Map<number, { amount: number; ledger: string; grp: string }[]>();
+  for (const l of lines) (byVoucher.get(l.voucher_id) ?? byVoucher.set(l.voucher_id, []).get(l.voucher_id)!).push(l);
+  const single = new Set(['Payment', 'Receipt', 'Contra']);
+  const CASH_BANK = new Set(['Cash-in-Hand', 'Bank Accounts', 'Bank OD A/c']);
+  const particularsOf = (v: (typeof vouchers)[number]): string => {
+    const es = byVoucher.get(v.id) ?? [];
+    if (single.has(v.parent)) {
+      const other = v.parent === 'Contra' ? es.find((e) => e.amount > 0) : es.find((e) => !CASH_BANK.has(e.grp));
+      if (other) return other.ledger;
+    }
+    if (v.party) return v.party;
+    return es.find((e) => e.amount > 0)?.ledger ?? es[0]?.ledger ?? '';
+  };
+  const byV = new Map(vouchers.map((v) => [v.id, particularsOf(v)]));
   return vouchers.map((v) => ({
     id: v.id,
     date: v.date,

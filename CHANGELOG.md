@@ -4,6 +4,9 @@ All notable changes to TallyBook are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Fixed
+- Day Book shows the party under Particulars for receipts, payments and invoices, as TallyPrime does, instead of the cash or bank ledger.
+
 ## [0.2.0] - 2026-11-03
 
 ### Added
