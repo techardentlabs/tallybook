@@ -1,6 +1,6 @@
 [package]
 name = "tallybook"
-version = "0.1.3"
+version = "0.1.4"
 description = "TallyBook"
 edition = "2021"
 

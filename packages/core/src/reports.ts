@@ -99,8 +99,24 @@ export interface GroupSummary {
   total: Totals;
 }
 
+async function addOpeningStock(db: Db, tree: Tree, totals: Map<number, Totals>, from: string, to: string): Promise<{ value: number; groupId: number | null }> {
+  const sih = tree.groups.find((g) => g.name === 'Stock-in-Hand');
+  if (!sih || !(await db.select('SELECT 1 FROM stock_items LIMIT 1')).length) return { value: 0, groupId: null };
+  const value = (await stockSummary(db, from, to)).opening_value;
+  if (!value) return { value: 0, groupId: sih.id };
+  let g: Group | undefined = sih;
+  while (g) {
+    const t = totals.get(g.id)!;
+    t.opening += value;
+    t.closing += value;
+    g = g.parent_id ? tree.byId.get(g.parent_id) : undefined;
+  }
+  return { value, groupId: sih.id };
+}
+
 export async function groupSummary(db: Db, from: string, to: string, groupId: number | null): Promise<GroupSummary> {
   const { tree, stats, totals } = await groupTotals(db, from, to);
+  const os = await addOpeningStock(db, tree, totals, from, to);
   if (groupId && !tree.byId.has(groupId)) throw new CoreError('not_found', 'Group not found');
   const rows: SummaryRow[] = [];
   for (const g of tree.children.get(groupId ?? 0) ?? []) {
@@ -110,6 +126,7 @@ export async function groupSummary(db: Db, from: string, to: string, groupId: nu
     for (const s of stats.filter((x) => x.group_id === groupId)) {
       rows.push({ kind: 'ledger', id: s.id, name: s.name, opening: s.opening, debit: s.debit, credit: s.credit, closing: s.closing });
     }
+    if (os.value && groupId === os.groupId) rows.push({ kind: 'ledger', id: 0, name: 'Opening Stock', opening: os.value, debit: 0, credit: 0, closing: os.value });
   }
   const total = zero();
   for (const r of rows) add(total, r);
@@ -663,6 +680,7 @@ export interface DetailRow extends SummaryRow {
 
 export async function groupSummaryDetailed(db: Db, from: string, to: string, groupId: number | null): Promise<{ title: string; rows: DetailRow[]; total: Totals }> {
   const { tree, stats, totals } = await groupTotals(db, from, to);
+  const os = await addOpeningStock(db, tree, totals, from, to);
   if (groupId && !tree.byId.has(groupId)) throw new CoreError('not_found', 'Group not found');
   const rows: DetailRow[] = [];
   const walk = (gid: number, depth: number) => {
@@ -670,6 +688,7 @@ export async function groupSummaryDetailed(db: Db, from: string, to: string, gro
       rows.push({ kind: 'group', id: g.id, name: g.name, depth, ...totals.get(g.id)! });
       walk(g.id, depth + 1);
       for (const s of stats.filter((x) => x.group_id === g.id)) rows.push({ kind: 'ledger', id: s.id, name: s.name, depth: depth + 1, opening: s.opening, debit: s.debit, credit: s.credit, closing: s.closing });
+      if (os.value && g.id === os.groupId) rows.push({ kind: 'ledger', id: 0, name: 'Opening Stock', depth: depth + 1, opening: os.value, debit: 0, credit: 0, closing: os.value });
     }
   };
   walk(groupId ?? 0, 0);

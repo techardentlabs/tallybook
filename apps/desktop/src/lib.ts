@@ -20,5 +20,5 @@ export const PARTY_ROOTS = ['Sundry Debtors', 'Sundry Creditors'];
 export const OUTPUT_SUPPLY = ['Sales Accounts', 'Direct Incomes', 'Indirect Incomes'];
 export const INPUT_SUPPLY = ['Purchase Accounts', 'Direct Expenses', 'Indirect Expenses', 'Fixed Assets'];
 
-export const GST_RATES_BP = [0, 25, 300, 500, 1200, 1800, 2800];
+export const GST_RATES_BP = [0, 25, 300, 500, 1200, 1800, 2800, 4000];
 export const rateLabel = (bp: number) => `${bp / 100}%`;

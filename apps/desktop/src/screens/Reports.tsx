@@ -171,7 +171,7 @@ export function GroupSummaryReport({ groupId = null }: { groupId?: number | null
   const { sel, setSel, keys } = useSel(rows.length);
   const open = (i: number) => {
     const r = rows[i];
-    if (!r) return;
+    if (!r || (r.kind === 'ledger' && r.id === 0)) return;
     nav.push(r.kind === 'group' ? <GroupSummaryReport groupId={r.id} /> : <LedgerReport ledgerId={r.id} />);
   };
   const exportCsv = async () => {

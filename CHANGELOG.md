@@ -4,6 +4,14 @@ All notable changes to TallyBook are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-03
+
+### Added
+- 40% GST rate (applies from 22 September 2025). 12% and 28% stay available for earlier invoices.
+
+### Fixed
+- Trial Balance includes Opening Stock under Stock-in-Hand, so it no longer shows a false opening difference when stock items have opening balances.
+
 ## [0.1.3] - 2026-11-03
 
 ### Fixed

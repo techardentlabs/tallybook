@@ -263,3 +263,15 @@ test('GSTR-1 HSN summary uses stock item HSN on item invoices', async () => {
   const codes = r.hsn.map((h) => `${h.hsn}@${h.rate_bp}:${h.taxable}`).sort();
   assert.deepEqual(codes, ['2523@2800:200000', '7306@1800:100000']);
 });
+
+test('trial balance includes opening stock so it agrees with the balance sheet', async () => {
+  const { books } = await setup();
+  const { groupSummary, groupSummaryDetailed } = await import('../src/index.ts');
+  const g = (await books.groups()).find((x) => x.name === 'Capital Account')!.id;
+  await books.createLedger({ name: 'Owner Capital', group_id: g, opening: -1000_00 });
+  await createStockItem(books.db, { name: 'Box', opening_qty: 10_000, opening_value: 1000_00 });
+  const tb = await groupSummary(books.db, '2026-04-01', '2027-03-31', null);
+  assert.equal(tb.total.opening, 0);
+  const det = await groupSummaryDetailed(books.db, '2026-04-01', '2027-03-31', null);
+  assert.ok(det.rows.some((r) => r.name === 'Opening Stock' && r.opening === 1000_00));
+});

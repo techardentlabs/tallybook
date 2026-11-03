@@ -12,7 +12,7 @@ export const STATES: { code: string; name: string }[] = [
   ['37', 'Andhra Pradesh'], ['38', 'Ladakh'], ['97', 'Other Territory'], ['99', 'Other Country'],
 ].map(([code, name]) => ({ code, name }));
 
-export const GST_SLABS_BP = [0, 25, 300, 500, 1200, 1800, 2800];
+export const GST_SLABS_BP = [0, 25, 300, 500, 1200, 1800, 2800, 4000];
 
 export function stateCode(nameOrCode: string): string {
   const t = nameOrCode.trim().toLowerCase();
