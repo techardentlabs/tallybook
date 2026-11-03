@@ -213,6 +213,16 @@ function nearestSlab(ratio: number): number {
 
 export async function invoiceTaxes(db: Db, from: string, to: string, company: { gstin: string; state: string }): Promise<InvoiceTax[]> {
   const rows = await gstRows(db, from, to);
+  const moves = await db.select<{ voucher_id: number; hsn: string; rate_bp: number; amount: number }>(
+    `SELECT m.voucher_id, i.hsn_sac AS hsn, i.rate_bp, m.amount FROM stock_movements m JOIN stock_items i ON i.id = m.item_id
+     JOIN vouchers v ON v.id = m.voucher_id WHERE v.date >= ? AND v.date <= ? AND v.cancelled = 0 ORDER BY m.voucher_id, m.seq`,
+    [from, to]
+  );
+  const itemsByV = new Map<number, typeof moves>();
+  for (const m of moves) {
+    if (!itemsByV.has(m.voucher_id)) itemsByV.set(m.voucher_id, []);
+    itemsByV.get(m.voucher_id)!.push(m);
+  }
   const byV = new Map<number, Row[]>();
   for (const r of rows) {
     if (!byV.has(r.voucher_id)) byV.set(r.voucher_id, []);
@@ -255,10 +265,15 @@ export async function invoiceTaxes(db: Db, from: string, to: string, company: { 
     const hsn = new Map<string, { hsn: string; taxable: number; rate_bp: number }>();
     for (const r of supply) {
       if (/nil|exempt/i.test(r.taxability) || (tax === 0 && r.lrate === 0)) inv.nil_exempt += taxableOf(r);
-      const rate = r.lrate || fallback;
-      const key = `${r.hsn}|${rate}`;
-      const cur = hsn.get(key) ?? { hsn: r.hsn, taxable: 0, rate_bp: rate };
-      cur.taxable += taxableOf(r);
+    }
+    const items = itemsByV.get(first.voucher_id);
+    const lines = items?.length
+      ? items.map((m) => ({ hsn: m.hsn, rate: m.rate_bp || fallback, taxable: Math.abs(m.amount) }))
+      : supply.map((r) => ({ hsn: r.hsn, rate: r.lrate || fallback, taxable: taxableOf(r) }));
+    for (const l of lines) {
+      const key = `${l.hsn}|${l.rate}`;
+      const cur = hsn.get(key) ?? { hsn: l.hsn, taxable: 0, rate_bp: l.rate };
+      cur.taxable += l.taxable;
       hsn.set(key, cur);
     }
     inv.hsn = [...hsn.values()];

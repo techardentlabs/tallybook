@@ -252,3 +252,14 @@ test('backup includes module tables such as cost centres and restores them', asy
   await restoreBackup(fresh.db, file);
   assert.ok((await costCentres(fresh.db)).some((c) => c.name === 'Pune Branch'));
 });
+
+test('GSTR-1 HSN summary uses stock item HSN on item invoices', async () => {
+  const { books, ty, sales, cust } = await setup();
+  const { gstr1 } = await import('../src/index.ts');
+  const a = await createStockItem(books.db, { name: 'Pipe', hsn_sac: '7306', rate_bp: 1800 });
+  const b = await createStockItem(books.db, { name: 'Cement', hsn_sac: '2523', rate_bp: 2800 });
+  await createItemInvoice(books, { kind: 'Sales', type_id: ty.get('Sales')!, date: '2026-05-02', party_id: cust, lines: [{ item_id: a.id, ledger_id: sales, qty: 10_000, rate: 100_00 }, { item_id: b.id, ledger_id: sales, qty: 5_000, rate: 400_00 }] });
+  const r = await gstr1(books, '2026-04-01', '2027-03-31');
+  const codes = r.hsn.map((h) => `${h.hsn}@${h.rate_bp}:${h.taxable}`).sort();
+  assert.deepEqual(codes, ['2523@2800:200000', '7306@1800:100000']);
+});

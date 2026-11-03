@@ -4,6 +4,11 @@ All notable changes to TallyBook are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-03
+
+### Fixed
+- GSTR-1 HSN/SAC summary now uses the HSN code and GST rate of each stock item on item invoices, instead of showing "(not set)" when the sales ledger has no HSN.
+
 ## [0.1.1] - 2026-11-03
 
 ### Fixed
