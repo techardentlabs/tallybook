@@ -113,3 +113,10 @@ test('ITC set-off follows the IGST, CGST, SGST order', async () => {
   assert.equal(r.cash_payable.cgst + r.cash_payable.sgst + r.cash_payable.igst, 0);
   assert.equal(r.carry_forward_itc.igst, 1800_00 - 900_00);
 });
+
+test('B2C large limit is ₹1 lakh from 1 August 2024 and ₹2.5 lakh before', async () => {
+  const { b2clThreshold } = await import('../src/index.ts');
+  assert.equal(b2clThreshold('2024-07-31'), 250000_00);
+  assert.equal(b2clThreshold('2024-08-01'), 100000_00);
+  assert.equal(b2clThreshold('2026-11-03'), 100000_00);
+});

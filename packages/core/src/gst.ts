@@ -297,7 +297,7 @@ export interface Gstr1 {
   totals: { taxable: number; igst: number; cgst: number; sgst: number; cess: number; invoices: number };
 }
 
-const B2CL_THRESHOLD = 250000_00;
+export const b2clThreshold = (date: string) => (date >= '2024-08-01' ? 100000_00 : 250000_00);
 
 export async function gstr1(books: Books, from: string, to: string): Promise<Gstr1> {
   const company = await books.requireCompany();
@@ -309,7 +309,7 @@ export async function gstr1(books: Books, from: string, to: string): Promise<Gst
   const interState = (i: InvoiceTax) => !!companyState && i.pos !== companyState;
 
   const b2b = sales.filter(registered);
-  const b2cl = sales.filter((i) => !registered(i) && interState(i) && i.total > B2CL_THRESHOLD);
+  const b2cl = sales.filter((i) => !registered(i) && interState(i) && i.total > b2clThreshold(i.date));
   const b2csSrc = sales.filter((i) => !registered(i) && !b2cl.includes(i));
   const cdnr = notes.filter(registered);
   const cdnur = notes.filter((i) => !registered(i));
@@ -326,7 +326,7 @@ export async function gstr1(books: Books, from: string, to: string): Promise<Gst
     map.set(key, cur);
   };
   for (const i of b2csSrc) add(i, 1);
-  for (const i of cdnur.filter((x) => x.total <= B2CL_THRESHOLD || !interState(x))) add(i, -1);
+  for (const i of cdnur.filter((x) => x.total <= b2clThreshold(x.date) || !interState(x))) add(i, -1);
 
   const hsnMap = new Map<string, Gstr1['hsn'][number]>();
   for (const i of sales) {

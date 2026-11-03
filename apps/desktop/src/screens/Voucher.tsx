@@ -395,6 +395,8 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
         dateRef.current?.focus();
         dateRef.current?.select();
       },
+      'Alt+N': () => (editing && source && INVOICE_TYPES.includes(type.parent) && flags.einvoice ? nav.push(<IrnDetailsForm voucherId={source.id} />) : false),
+      'Alt+W': () => (editing && source && INVOICE_TYPES.includes(type.parent) && flags.ewb ? nav.push(<EWayBillDetailsForm voucherId={source.id} />) : false),
       'Ctrl+T': () => (BANK_VOUCHERS.includes(type.parent) ? setPostDated((p) => !p) : false),
       'Alt+D': () => (editing ? void remove() : false),
       'Alt+X': () => (editing ? void cancelVoucher() : false),

@@ -4,6 +4,15 @@ All notable changes to TallyBook are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-03
+
+### Fixed
+- GSTR-1: invoices to unregistered buyers in other states go to B2C (Large) above ₹1 lakh from 1 August 2024 (previously ₹2.5 lakh), as notified by CBIC.
+- Alt+N (e-Invoice Details) and Alt+W (e-Way Bill Details) now work from the keyboard in an altered invoice.
+- TDS Deductor Details (TAN, deductor type, responsible person) is reachable from the Company menu (Alt+K), so Form 26Q has the company TAN.
+- The TallyVault field no longer claims to encrypt data; it is a password asked before the company opens.
+- Company Features (F11) groups TDS, TCS, e-invoicing and e-way bill under Statutory & Taxation and drops an outdated note.
+
 ## [0.1.2] - 2026-11-03
 
 ### Fixed

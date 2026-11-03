@@ -2,6 +2,7 @@ import { MenuCard, useMenu, type MenuItem } from '../ui/Menu.tsx';
 import { useScreen } from '../registry.ts';
 import { useNav } from '../nav.tsx';
 import { CompanyAlter } from './Features.tsx';
+import { TdsDeductorForm } from './Tds.tsx';
 import { ChangePasswordScreen, ChangeUserScreen } from './Login.tsx';
 import { CompanySecurityScreen, PasswordPolicyScreen, SecurityControlScreen, UserRolesScreen, UsersAndPasswordsScreen } from './Security.tsx';
 
@@ -10,6 +11,7 @@ export function CompanyMenu() {
   const items: MenuItem[] = [
     { label: 'Company', heading: true },
     { label: 'Alter', run: () => nav.push(<CompanyAlter />), hotkey: 'A' },
+    { label: 'TDS Deductor Details', run: () => nav.push(<TdsDeductorForm />), hotkey: 'T' },
     { label: 'Security', heading: true },
     { label: 'Users and Passwords', run: () => nav.push(<UsersAndPasswordsScreen />), hotkey: 'U' },
     { label: 'User Roles', run: () => nav.push(<UserRolesScreen />), hotkey: 'R' },

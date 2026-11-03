@@ -69,7 +69,7 @@ export function CompanySecurityScreen() {
     { key: 'admin', label: 'Name of Administrator', kind: 'text', hidden: !isYes(v.use) || !!enabled },
     { key: 'password', label: 'Password', kind: 'password', hidden: !isYes(v.use) || !!enabled },
     { key: 'repeat', label: 'Repeat Password', kind: 'password', hidden: !isYes(v.use) || !!enabled },
-    { key: 'vault', label: 'Set TallyVault Password to encrypt Company Data', kind: 'password', heading: 'TallyVault' },
+    { key: 'vault', label: 'TallyVault password (asked before this company opens)', kind: 'password', heading: 'TallyVault' },
     { key: 'vaultRepeat', label: 'Confirm Password', kind: 'password' },
   ];
   const save = async () => {
