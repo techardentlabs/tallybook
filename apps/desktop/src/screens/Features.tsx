@@ -32,11 +32,7 @@ export function FeaturesScreen() {
     { key: 'inv', label: 'Maintain inventory', kind: 'toggle', initial: !!company.inventory_enabled },
     { key: 'cc', label: 'Enable cost centres', kind: 'toggle', initial: !!company.cost_centres_enabled },
     { key: 'pay', label: 'Maintain payroll', kind: 'toggle', initial: !!company.payroll_enabled },
-    { key: 'tds', label: 'Enable Tax Deducted at Source (TDS)', kind: 'toggle', initial: !!tds.tds_enabled },
-    { key: 'tcs', label: 'Enable Tax Collected at Source (TCS)', kind: 'toggle', initial: !!tds.tcs_enabled },
-    { key: 'einv', label: 'Enable e-Invoicing', kind: 'toggle', initial: !!tds.einvoice_enabled },
-    { key: 'ewb', label: 'Enable e-Way Bill', kind: 'toggle', initial: !!tds.ewb_enabled },
-    { key: 'gst', label: 'Enable Goods and Services Tax (GST)', kind: 'toggle', initial: !!company.gst_enabled, heading: 'Statutory & taxation' },
+    { key: 'gst', label: 'Enable Goods and Services Tax (GST)', kind: 'toggle', initial: !!company.gst_enabled, heading: 'Statutory & Taxation' },
     {
       key: 'gstin',
       label: 'GSTIN/UIN',
@@ -46,12 +42,15 @@ export function FeaturesScreen() {
       visible: (v) => v.gst,
       validate: (v) => (v.gst && v.gstin && !isValidGstin(v.gstin) ? 'GSTIN is not valid' : null),
     },
+    { key: 'tds', label: 'Enable Tax Deducted at Source (TDS)', kind: 'toggle', initial: !!tds.tds_enabled },
+    { key: 'tcs', label: 'Enable Tax Collected at Source (TCS)', kind: 'toggle', initial: !!tds.tcs_enabled },
+    { key: 'einv', label: 'Enable e-Invoicing', kind: 'toggle', initial: !!tds.einvoice_enabled },
+    { key: 'ewb', label: 'Enable e-Way Bill', kind: 'toggle', initial: !!tds.ewb_enabled },
   ];
   return (
     <div className="max-w-2xl border border-tb-line bg-tb-paper p-4">
       <h3 className="mb-3 text-[15px] font-semibold">Company Operations Alteration (F11)</h3>
       <Form ref={form} fields={fields} onDone={() => void save()} />
-      <p className="mt-3 text-xs text-tb-muted">Inventory, payroll and order processing arrive in later releases.</p>
     </div>
   );
 }
