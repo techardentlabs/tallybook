@@ -207,3 +207,17 @@ test('ensureVClass upgrades an older class schema in place', async () => {
   await updateVoucherClass(books.db, 1, { type_id: sales.id, name: 'Legacy', lines: [{ section: 'additional', ledger_id: led.id, calc: 'subtotal', value: 100 }] });
   assert.equal((await voucherClass(books.db, 1))!.lines[0].calc, 'subtotal');
 });
+
+test('receipt text lists items, total, payments and messages', async () => {
+  const { posReceiptText } = await import('../src/posreceipt.ts');
+  const text = posReceiptText({
+    title: 'Retail Invoice', company: 'Shop', address: 'Pune', gstin: '', number: '7', date: '3-Nov-2026', party: '',
+    lines: [{ item: 'Pen', qty: 2_000, rate: 10_00, amount: 20_00 }], charges: [{ label: 'Rounding', amount: 0 }], total: 20_00,
+    payments: [{ label: 'Cash', amount: 20_00, ref: '' }], tendered: 50_00, balance: 30_00, messages: ['Thank you'], currency: '₹',
+  }, 30);
+  assert.match(text, /Retail Invoice/);
+  assert.match(text, /2 x 10\.00\s+20\.00/);
+  assert.match(text, /TOTAL\s+₹ 20\.00/);
+  assert.match(text, /Balance returned\s+30\.00/);
+  assert.match(text, /Thank you/);
+});

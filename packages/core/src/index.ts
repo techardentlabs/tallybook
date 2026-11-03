@@ -20,6 +20,7 @@ export * from './vclass.ts';
 export * from './mfg.ts';
 export * from './jobwork.ts';
 export * from './pos.ts';
+export * from './posreceipt.ts';
 export * from './split.ts';
 export * from './group.ts';
 export * from './json-exchange.ts';

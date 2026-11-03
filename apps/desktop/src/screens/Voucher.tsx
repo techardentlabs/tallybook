@@ -3,6 +3,7 @@ import { voucherClassUse, voucherForex, saveVoucherForex, type EntryForexInput, 
 import { showAccessDenied, useScreen } from '../registry.ts';
 import { useStore } from '../store.tsx';
 import { registerUnsaved } from '../unsaved.ts';
+import { printPosReceipt } from './posPrint.ts';
 import { ManufacturingJournalScreen, ChangeVoucherMode } from './Manufacturing.tsx';
 import { VoucherClassPicker, useTypeOptions, useVoucherClasses } from './VoucherClass.tsx';
 import { useNav } from '../nav.tsx';
@@ -420,6 +421,7 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
         lastDate = iso;
         bump();
         toast(`${type.name} voucher No. ${v.number} saved`, 'ok');
+        if (pos && typeOpts?.print_after_saving) void printPosReceipt(books, v.id).catch(() => undefined);
         setNarration('');
         setReference('');
         setDirty(false);
@@ -485,6 +487,7 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
       'Alt+D': () => (editing ? void remove() : false),
       'Alt+X': () => (editing ? void cancelVoucher() : false),
       'Alt+2': () => (editing ? duplicate() : false),
+      ...(pos && editing && source ? { 'Ctrl+P': () => void printPosReceipt(books, source.id).then((ok) => !ok && toast('Nothing to print', 'err')) } : {}),
       'Alt+R': () => body.current?.removeLine(),
       'Alt+I': () => (pos && body.current?.multiMode ? body.current.multiMode() : false),
       'Ctrl+H': () => {
