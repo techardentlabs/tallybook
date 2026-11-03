@@ -239,3 +239,16 @@ test('group behaviour options persist', async () => {
   assert.equal(u.used_for_calc, 0);
   assert.equal(u.net_balance_reporting, 1);
 });
+
+test('backup includes module tables such as cost centres and restores them', async () => {
+  const { books } = await setup();
+  const { createBackup, restoreBackup, ensureCosting, createCostCentre, costCentres } = await import('../src/index.ts');
+  await ensureCosting(books.db);
+  await createCostCentre(books.db, { name: 'Pune Branch' });
+  const file = JSON.parse(JSON.stringify(await createBackup(books.db)));
+  assert.ok(file.tables.cost_centres.some((r: { name: string }) => r.name === 'Pune Branch'));
+  const fresh = new Books((await import('../src/node-adapter.ts')).nodeDb());
+  await fresh.init();
+  await restoreBackup(fresh.db, file);
+  assert.ok((await costCentres(fresh.db)).some((c) => c.name === 'Pune Branch'));
+});

@@ -24,9 +24,16 @@ export interface BackupFile {
   tables: Record<string, Record<string, SqlValue>[]>;
 }
 
+async function allTables(db: Db): Promise<string[]> {
+  const rows = await db.select<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY rowid");
+  const names = rows.map((r) => r.name);
+  const core = BACKUP_TABLES.filter((t) => names.includes(t));
+  return [...core, ...names.filter((n) => !(core as string[]).includes(n))];
+}
+
 export async function createBackup(db: Db): Promise<BackupFile> {
   const tables: BackupFile['tables'] = {};
-  for (const t of BACKUP_TABLES) tables[t] = await db.select<Record<string, SqlValue>>(`SELECT * FROM ${t}`);
+  for (const t of await allTables(db)) tables[t] = await db.select<Record<string, SqlValue>>(`SELECT * FROM "${t}"`);
   return { format: 'tallybook-backup', version: 1, created: new Date().toISOString(), tables };
 }
 
@@ -34,14 +41,16 @@ export async function restoreBackup(db: Db, file: unknown): Promise<{ rows: numb
   const f = file as BackupFile;
   if (!f || f.format !== 'tallybook-backup' || f.version !== 1 || typeof f.tables !== 'object') throw new CoreError('invalid', 'This is not a TallyBook backup file');
   if (!f.tables.company?.length) throw new CoreError('invalid', 'The backup has no company data');
+  const existing = await allTables(db);
+  const order = [...Object.keys(f.tables).filter((t) => existing.includes(t)), ...existing.filter((t) => !(t in f.tables))];
   const stmts: Stmt[] = [];
-  for (const t of [...BACKUP_TABLES].reverse()) stmts.push({ sql: `DELETE FROM ${t}` });
+  for (const t of [...order].reverse()) stmts.push({ sql: `DELETE FROM "${t}"` });
   let rows = 0;
-  for (const t of BACKUP_TABLES) {
+  for (const t of order) {
     for (const r of f.tables[t] ?? []) {
       const cols = Object.keys(r);
       if (!cols.every((c) => /^[a-z_]+$/.test(c))) throw new CoreError('invalid', `Unexpected column in ${t}`);
-      stmts.push({ sql: `INSERT INTO ${t} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`, params: cols.map((c) => r[c]) });
+      stmts.push({ sql: `INSERT INTO "${t}" (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`, params: cols.map((c) => r[c]) });
       rows += 1;
     }
   }

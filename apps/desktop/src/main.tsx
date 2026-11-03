@@ -1,6 +1,6 @@
 import { StrictMode, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Books, currentUser, ensureCurrency, ensureSecurity, ensureStockExtras, ensureVClass } from '@tallybook/core';
+import { Books, currentUser, ensureBanking, ensureCurrency, ensurePayroll, ensureSecurity, ensureStatutory, ensureStockExtras, ensureVClass } from '@tallybook/core';
 import { LoginGate, SecurityProvider } from './screens/Login.tsx';
 import './index.css';
 import { openDb } from './db/index.ts';
@@ -42,6 +42,9 @@ async function boot() {
     await ensureCurrency(books.db);
     await ensureStockExtras(books.db);
     await ensureVClass(books.db);
+    await ensureStatutory(books.db);
+    await ensureBanking(books.db);
+    await ensurePayroll(books.db);
     const company = await books.company();
     createRoot(rootEl).render(
       <StrictMode>

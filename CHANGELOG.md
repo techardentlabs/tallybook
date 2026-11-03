@@ -4,6 +4,12 @@ All notable changes to TallyBook are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-03
+
+### Fixed
+- Company Features (F11) showed a blank screen on a fresh install; statutory, banking and payroll tables are now created at start-up.
+- Backups now include every table (payroll, TDS, banking, cost centres, budgets, price lists, batches, currencies, users). Previously only core accounting and inventory data was saved.
+
 ## [0.1.0] - 2026-11-02
 
 First public preview.
