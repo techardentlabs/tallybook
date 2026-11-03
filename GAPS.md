@@ -18,7 +18,6 @@ Status as of 0.1.6 (3 Nov 2026). "Built" means engine, screens and tests exist; 
 - Voucher classes fill lines in voucher mode; invoice-mode classes (default allocations per item) are not applied yet.
 - Security: about 34 of Tally's ~86 facilities; permission checks cover vouchers and main statements only.
 - Only one company is open at a time (TallyPrime can load several).
-- EPF wage ceiling still uses ₹15,000; the reported revision has not been verified yet.
 
 ## Not built
 - Multi-user over a network, remote access, browser reports, synchronisation.

@@ -4,6 +4,9 @@ All notable changes to TallyBook are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Changed
+- EPF wage ceiling is ₹25,000 a month from 17 September 2026 (₹15,000 before). September 2026 payroll is split by days, ₹15,000 up to the 16th and ₹25,000 from the 17th. Contribution rates are unchanged. PF pay heads using the statutory ceiling pick this up automatically; a custom ceiling is left as entered.
+
 ### Fixed
 - Day Book shows the party under Particulars for receipts, payments and invoices, as TallyPrime does, instead of the cash or bank ledger.
 

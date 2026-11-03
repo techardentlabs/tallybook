@@ -62,7 +62,7 @@ import {
   type SalaryOwner,
   type TaxRegime,
   type TaxRules,
-  type Unit,
+  type Unit, isStatutoryPfCeiling, pfCeilingOn, todayIso,
 } from '@tallybook/core';
 import { Form, type FieldDef, type FormHandle } from '../ui/Form.tsx';
 import { PickerInput, type Opt } from '../ui/PickerInput.tsx';
@@ -378,7 +378,7 @@ export function PayHeadForm({ id, presetName }: { id?: number; presetName?: stri
       (i): FieldDef => ({ key: `f${i}`, label: i === 0 ? '    Specified formula' : '', kind: 'picker', title: 'Pay Heads', options: formulaOpts, initial: term(i), visible: formula })
     ),
     { key: 'rate', label: '  Percentage', kind: 'text', initial: cur?.rate_bp ? String(cur.rate_bp / 100) : '', visible: (v) => calc(v) === 'As Computed Value' },
-    { key: 'ceiling', label: '  Maximum value of base', kind: 'amount', initial: cur?.ceiling || undefined, visible: (v) => calc(v) === 'As Computed Value' },
+    { key: 'ceiling', label: '  Maximum value of base', kind: 'amount', initial: (cur && isStatutoryPfCeiling(cur) ? pfCeilingOn(todayIso()) : cur?.ceiling) || undefined, visible: (v) => calc(v) === 'As Computed Value' },
     { key: 'max_base', label: '  Not applicable above', kind: 'amount', initial: cur?.max_base || undefined, visible: (v) => calc(v) === 'As Computed Value' },
     { key: 'statutory', label: '  Statutory pay head', kind: 'picker', title: 'Statutory Pay Heads', options: [{ id: '', label: 'Not Applicable' }, { id: 'PF', label: 'Provident Fund' }, { id: 'ESI', label: 'Employees State Insurance' }, { id: 'PT', label: 'Professional Tax' }], initial: { id: cur?.statutory ?? '', label: { '': 'Not Applicable', PF: 'Provident Fund', ESI: 'Employees State Insurance', PT: 'Professional Tax' }[cur?.statutory ?? ''] ?? 'Not Applicable' }, visible: (v) => calc(v) === 'As Computed Value' },
     { key: 'rounding', label: 'Rounding Method', kind: 'picker', title: 'Rounding Methods', options: enumOpts(ROUNDING_METHODS), initial: enumPick(ROUNDING_METHODS, cur?.rounding), required: true, heading: 'Rounding Off Information' },

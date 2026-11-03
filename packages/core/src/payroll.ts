@@ -524,8 +524,40 @@ export function attendanceUnit(t: Pick<AttendanceType, 'kind' | 'period_type' | 
   return t.kind === 'Production' ? t.unit : t.period_type || 'Days';
 }
 
+export const PF_CEILINGS: { from: string; amount: number }[] = [
+  { from: '0000-01-01', amount: 15000_00 },
+  { from: '2026-09-17', amount: 25000_00 },
+];
+
+export function pfCeilingOn(date: string): number {
+  let amount = PF_CEILINGS[0].amount;
+  for (const c of PF_CEILINGS) if (c.from <= date) amount = c.amount;
+  return amount;
+}
+
+const dayNo = (iso: string) => Math.round(Date.parse(`${iso}T00:00:00Z`) / 86400000);
+
+export function pfWageCap(wages: number, from: string, to: string): number {
+  const start = dayNo(from);
+  const end = dayNo(to);
+  const total = end - start + 1;
+  if (total <= 0) return Math.min(wages, pfCeilingOn(to));
+  let capped = 0;
+  for (let i = 0; i < PF_CEILINGS.length; i += 1) {
+    const segFrom = Math.max(start, dayNo(PF_CEILINGS[i].from));
+    const segTo = Math.min(end, i + 1 < PF_CEILINGS.length ? dayNo(PF_CEILINGS[i + 1].from) - 1 : end);
+    if (segTo < segFrom) continue;
+    capped += (Math.min(wages, PF_CEILINGS[i].amount) * (segTo - segFrom + 1)) / total;
+  }
+  return Math.round(capped);
+}
+
+export function isStatutoryPfCeiling(ph: { statutory: string; ceiling: number }): boolean {
+  return ph.statutory === 'PF' && PF_CEILINGS.some((c) => c.amount === ph.ceiling);
+}
+
 export function statutoryDefaults(kind: string): Partial<PayHeadInput> {
-  if (kind === 'PF') return { ph_type: "Employees' Statutory Deductions", calc_type: 'As Computed Value', compute_basis: 'On Specified Formula', rate_bp: 1200, ceiling: 15000_00, statutory: 'PF' };
+  if (kind === 'PF') return { ph_type: "Employees' Statutory Deductions", calc_type: 'As Computed Value', compute_basis: 'On Specified Formula', rate_bp: 1200, ceiling: pfCeilingOn('9999-12-31'), statutory: 'PF' };
   if (kind === 'ESI') return { ph_type: "Employees' Statutory Deductions", calc_type: 'As Computed Value', compute_basis: 'On Current Earnings Total', rate_bp: 75, max_base: 21000_00, statutory: 'ESI' };
   if (kind === 'PT')
     return {
@@ -847,7 +879,8 @@ export async function computeSalary(db: Db, employeeId: number, date: string, op
       }
       if (ph.max_base && base > ph.max_base) v = 0;
       else {
-        if (ph.ceiling && base > ph.ceiling) base = ph.ceiling;
+        if (isStatutoryPfCeiling(ph)) base = pfWageCap(base, b.from, b.to);
+        else if (ph.ceiling && base > ph.ceiling) base = ph.ceiling;
         if (ph.slabs.length) v = ph.slabs.find((sl) => base >= sl.from && (sl.to === 0 || base <= sl.to))?.amount ?? 0;
         else v = Math.round((base * ph.rate_bp) / 10000);
       }

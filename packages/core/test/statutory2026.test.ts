@@ -211,3 +211,16 @@ test('gratuity pay head provisions monthly and the provision report', async () =
   await saveEmployeeTerms(db, ravi.id, { date_of_leaving: '2026-04-30' });
   assert.equal((await gratuityReport(db, '2026-05-31')).find((r) => r.employee_id === ravi.id)!.result!.accrued, 1250_00);
 });
+
+test('EPF wage ceiling moves to 25,000 from 17 September 2026 with a split September', async () => {
+  const { pfCeilingOn, pfWageCap, isStatutoryPfCeiling } = await import('../src/payroll.ts');
+  assert.equal(pfCeilingOn('2026-09-16'), 15000_00);
+  assert.equal(pfCeilingOn('2026-09-17'), 25000_00);
+  assert.equal(pfWageCap(40000_00, '2026-08-01', '2026-08-31'), 15000_00);
+  assert.equal(pfWageCap(40000_00, '2026-10-01', '2026-10-31'), 25000_00);
+  assert.equal(pfWageCap(20000_00, '2026-10-01', '2026-10-31'), 20000_00);
+  assert.equal(pfWageCap(20000_00, '2026-09-01', '2026-09-30'), Math.round((15000_00 * 16 + 20000_00 * 14) / 30));
+  assert.equal(pfWageCap(12000_00, '2026-09-01', '2026-09-30'), 12000_00);
+  assert.ok(isStatutoryPfCeiling({ statutory: 'PF', ceiling: 15000_00 }));
+  assert.ok(!isStatutoryPfCeiling({ statutory: 'PF', ceiling: 18000_00 }));
+});
