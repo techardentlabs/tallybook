@@ -4,12 +4,17 @@ All notable changes to TallyBook are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-03
+
 ### Added
 - Multiple companies: each company has its own data file and its own TallyVault. Select Company at start-up, F3 to change company, Alt+F3 for Company Info (Select, Shut, Create, Alter, Change TallyVault), Ctrl+F3 to shut. Existing data opens as the first company without being moved.
 - Manufacturing: Bill of Materials on stock items (Set/Alter Components), Manufacturing Journal with components, co-products, by-products, scrap and additional costs, plus Cost Estimation, Job Costing and Material Requirement reports. Stock Journal gets Ctrl+H (Change Mode).
 - Batches in vouchers: with "Maintain batches" on in F11, invoices, delivery/receipt notes, rejections and stock journals ask for batch allocations for batch-wise items.
 - Price levels: "Enable multiple price levels" in F11, a "Price level applicable" field on party ledgers, and invoices fill the rate and discount from the price list after the quantity.
 - Voucher classes: a voucher type with classes asks for the class when a voucher is opened, and the class lines are filled in after the first amount.
+- Foreign currency: "Currency of Ledger" on ledgers. Entering an amount for such a ledger asks for the foreign amount and rate of exchange, and the voucher shows "Forex: $100.00 @ ₹ 84/$ = ₹ 8,400.00".
+- Income-tax Act, 2025: TDS and TCS natures carry their new section (e.g. 393(1) Sl. No. 6(i)) and rates from 1 April 2026, while earlier vouchers keep the 1961 sections. Scrap and timber TCS move to 2%. The quarterly TDS report is titled Form 140 for 2026-27.
+- Payroll: income tax on salary by slab under the new or old regime (with rebate, surcharge and cess), gratuity under the Labour Codes (including fixed-term employees after one year), Income Tax Declarations, editable Income Tax Slabs, and Income Tax Computation and Gratuity reports.
 - Bill-wise details have a "Due Date, or Credit Days" column, defaulted from the ledger's credit period, with the "Check for credit days" limit enforced.
 - TDS and cost-centre details are asked again when a voucher is altered, with the earlier allocations filled in.
 
