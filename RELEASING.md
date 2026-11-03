@@ -60,7 +60,22 @@ Artifacts per release:
 | `TAURI_SIGNING_PRIVATE_KEY` | Signs update packages. The key file lives outside the repo (`~/.tauri/tallybook.key`). Back it up: if it is lost, installed apps can no longer be updated. |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Empty for the current key. |
 
-Code signing is not set up yet. To remove the macOS "unidentified developer" and Windows SmartScreen warnings, add an Apple Developer ID certificate (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) and a Windows code-signing certificate, then pass them to `tauri-action`.
+### macOS signing and notarisation
+
+The Release workflow signs and notarises the Mac build automatically once these secrets exist on `techardentlabs/tallybook`; without them it builds unsigned.
+
+| Secret | Value |
+|---|---|
+| `APPLE_CERTIFICATE` | Base64 of the exported "Developer ID Application" certificate (.p12): `base64 -i cert.p12 \| pbcopy` |
+| `APPLE_CERTIFICATE_PASSWORD` | Password chosen when exporting the .p12 |
+| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Techardent Internet Private Limited (TEAMID)` |
+| `APPLE_API_ISSUER` | App Store Connect → Users and Access → Integrations → Keys: Issuer ID |
+| `APPLE_API_KEY` | Key ID of an API key with the Developer role |
+| `APPLE_API_PRIVATE_KEY` | Contents of the downloaded `AuthKey_<KEYID>.p8` |
+
+Enrol as an Organisation (Techardent Internet Private Limited, needs a D-U-N-S number) so the certificate shows the company name, not a person's.
+
+Windows signing is not set up yet; Azure Trusted Signing or an OV/EV certificate removes the SmartScreen warning.
 
 ## Release checklist
 
