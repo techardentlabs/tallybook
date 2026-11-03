@@ -29,6 +29,7 @@ export interface Company {
   cost_centres_enabled: number;
   price_levels_enabled: number;
   batches_enabled: number;
+  job_work_enabled: number;
 }
 
 export interface Group {
@@ -311,7 +312,7 @@ export class Books {
           m.bill_wise ? 1 : 0, m.inventory_enabled ? 1 : 0,
         ],
       },
-      { sql: 'UPDATE company SET payroll_enabled = ?, cost_centres_enabled = ?, price_levels_enabled = ?, batches_enabled = ? WHERE id = 1', params: [m.payroll_enabled ? 1 : 0, m.cost_centres_enabled ? 1 : 0, m.price_levels_enabled ? 1 : 0, m.batches_enabled ? 1 : 0] },
+      { sql: 'UPDATE company SET payroll_enabled = ?, cost_centres_enabled = ?, price_levels_enabled = ?, batches_enabled = ?, job_work_enabled = ? WHERE id = 1', params: [m.payroll_enabled ? 1 : 0, m.cost_centres_enabled ? 1 : 0, m.price_levels_enabled ? 1 : 0, m.batches_enabled ? 1 : 0, m.job_work_enabled ? 1 : 0] },
     ]);
     return (await this.company())!;
   }

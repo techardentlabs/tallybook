@@ -8,7 +8,7 @@ import { TdsDutyLedgerForm, TdsPartyDetailsForm } from './Tds.tsx';
 import { BankConfigurationScreen } from './BankingCheques.tsx';
 import { Form, type FieldDef, type FormHandle } from '../ui/Form.tsx';
 import type { Opt } from '../ui/PickerInput.tsx';
-import { useScreen } from '../registry.ts';
+import { showAccessDenied, useScreen } from '../registry.ts';
 import { useStore } from '../store.tsx';
 import { useCurrencies } from './Currency.tsx';
 import { useNav } from '../nav.tsx';
@@ -55,7 +55,7 @@ export function GroupForm({ id, onSaved }: { id?: number; onSaved?: (g: Group) =
   const opts = useMemo<Opt[]>(() => [{ id: 0, label: 'Primary' }, ...groups.map((g) => ({ id: g.id, label: g.name }))], [groups]);
 
   const save = async () => {
-    if (!canCurrent(`Accounts Masters.${id ? 'alter' : 'create'}`)) return toast('You do not have access to this action', 'err');
+    if (!canCurrent(`Accounts Masters.${id ? 'alter' : 'create'}`)) return showAccessDenied();
     const v = form.current?.submit();
     if (!v) return;
     try {
@@ -168,7 +168,7 @@ export function LedgerForm({ id, presetName, onSaved }: LedgerFormProps) {
   const hasRoot = (gid: number | null, roots: string[]) => names(gid).some((n) => roots.includes(n));
 
   const save = async () => {
-    if (!canCurrent(`Accounts Masters.${id ? 'alter' : 'create'}`)) return toast('You do not have access to this action', 'err');
+    if (!canCurrent(`Accounts Masters.${id ? 'alter' : 'create'}`)) return showAccessDenied();
     const v = form.current?.submit();
     if (!v) return;
     try {
@@ -409,7 +409,7 @@ export function VoucherTypeForm({ id, onSaved }: { id?: number; onSaved?: (t: Vo
   const cur = types.find((t) => t.id === id);
 
   const save = async () => {
-    if (!canCurrent(`Accounts Masters.${id ? 'alter' : 'create'}`)) return toast('You do not have access to this action', 'err');
+    if (!canCurrent(`Accounts Masters.${id ? 'alter' : 'create'}`)) return showAccessDenied();
     const v = form.current?.submit();
     if (!v) return;
     try {

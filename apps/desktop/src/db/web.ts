@@ -16,7 +16,7 @@ import {
   type SqlValue,
   type Stmt,
 } from '@tallybook/core';
-import { storageOf, type Backend, type Registry, type Vault } from './index.ts';
+import { storageOf, type Attached, type Backend, type Registry, type Vault } from './index.ts';
 
 const STORE = 'files';
 const INDEX_KEY = 'companies';
@@ -126,6 +126,86 @@ export async function openWebRegistry(): Promise<Registry> {
       if (!isCompanyFile(entry.file, 'key', LEGACY_KEY)) throw new CoreError('invalid', 'The company data file name is not valid');
       return storageOf(await openWebStorage(entry.file));
     },
+    async isEncrypted(entry) {
+      if (!isCompanyFile(entry.file, 'key', LEGACY_KEY)) return false;
+      return isSealed(await load(entry.file));
+    },
+    attach: (entry, opts) => attachWeb(entry.file, opts),
+    async create(entry, password) {
+      if (!isCompanyFile(entry.file, 'key', LEGACY_KEY)) throw new CoreError('invalid', 'The company data file name is not valid');
+      if (await load(entry.file)) throw new CoreError('conflict', 'A company with this number already exists');
+      const cipher = password ? await makeCipher(password, randomBytes(16), VAULT_ITERATIONS) : null;
+      const d = await openWebDb(entry.file, null, cipher);
+      return { db: d.db, encrypted: !!cipher, close: () => d.flush() };
+    },
+    memory: () => openMemoryDb(),
+  };
+}
+
+async function sqlJs() {
+  return initSqlJs({ locateFile: () => wasmUrl });
+}
+
+function sqlDb(sqlite: Database, after?: () => void): Db {
+  return {
+    async select<T>(sql: string, params: SqlValue[] = []): Promise<T[]> {
+      const stmt = sqlite.prepare(sql);
+      try {
+        stmt.bind(params as SqlJsValue[]);
+        const rows: T[] = [];
+        while (stmt.step()) rows.push(stmt.getAsObject() as T);
+        return rows;
+      } finally {
+        stmt.free();
+      }
+    },
+    async batch(stmts: Stmt[]): Promise<void> {
+      sqlite.exec('BEGIN');
+      try {
+        for (const s of stmts) sqlite.run(s.sql, (s.params ?? []) as SqlJsValue[]);
+        sqlite.exec('COMMIT');
+      } catch (e) {
+        sqlite.exec('ROLLBACK');
+        throw e;
+      }
+      after?.();
+    },
+  };
+}
+
+export async function openMemoryDb(): Promise<Db> {
+  const SQL = await sqlJs();
+  return sqlDb(new SQL.Database());
+}
+
+async function attachWeb(file: string, opts: { readonly: boolean; password?: string }): Promise<Attached> {
+  if (!isCompanyFile(file, 'key', LEGACY_KEY)) throw new CoreError('invalid', 'The company data file name is not valid');
+  const raw = await load(file);
+  if (!raw) throw new CoreError('not_found', 'The company data was not found');
+  let bytes: Uint8Array;
+  let cipher: Cipher | null = null;
+  if (isSealed(raw)) {
+    if (!opts.password) throw new CoreError('invalid', WRONG_VAULT_PASSWORD);
+    const key = await deriveVaultKey(opts.password, raw.salt, raw.iterations);
+    bytes = await openWithKey(key, raw.iv, raw.data, AAD);
+    cipher = { key, salt: raw.salt, iterations: raw.iterations, check: await sealWithKey(key, CHECK, AAD) };
+  } else bytes = raw;
+  if (!opts.readonly) {
+    const d = await openWebDb(file, bytes, cipher);
+    return { db: d.db, encrypted: !!cipher, close: () => d.flush() };
+  }
+  const SQL = await sqlJs();
+  const sqlite = new SQL.Database(bytes);
+  const db = sqlDb(sqlite);
+  return {
+    db: {
+      select: (sql, params) => db.select(sql, params),
+      batch: async () => {
+        throw new CoreError('invalid', 'The company is open read-only');
+      },
+    },
+    encrypted: !!cipher,
+    close: async () => sqlite.close(),
   };
 }
 
@@ -161,7 +241,7 @@ export async function openWebDb(
   existing: Uint8Array | null = null,
   initial: Cipher | null = null
 ): Promise<Db & { export(): Uint8Array; reset(): Promise<void>; flush(): Promise<void>; vault: Vault; db: Db }> {
-  const SQL = await initSqlJs({ locateFile: () => wasmUrl });
+  const SQL = await sqlJs();
   const sqlite: Database = existing ? new SQL.Database(existing) : new SQL.Database();
   sqlite.exec('PRAGMA foreign_keys = ON;');
   let cipher = initial;
@@ -216,30 +296,7 @@ export async function openWebDb(
       }
     },
   };
-  const db: Db = {
-    async select<T>(sql: string, params: SqlValue[] = []): Promise<T[]> {
-      const stmt = sqlite.prepare(sql);
-      try {
-        stmt.bind(params as SqlJsValue[]);
-        const rows: T[] = [];
-        while (stmt.step()) rows.push(stmt.getAsObject() as T);
-        return rows;
-      } finally {
-        stmt.free();
-      }
-    },
-    async batch(stmts: Stmt[]): Promise<void> {
-      sqlite.exec('BEGIN');
-      try {
-        for (const s of stmts) sqlite.run(s.sql, (s.params ?? []) as SqlJsValue[]);
-        sqlite.exec('COMMIT');
-      } catch (e) {
-        sqlite.exec('ROLLBACK');
-        throw e;
-      }
-      persist();
-    },
-  };
+  const db: Db = sqlDb(sqlite, persist);
   return {
     ...db,
     db,

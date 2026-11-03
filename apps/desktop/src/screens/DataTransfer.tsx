@@ -1,6 +1,11 @@
 import { KeyButton } from '../ui/KeyButton.tsx';
 import { useRef, useState } from 'react';
-import { exportMastersXml, exportVouchersXml, fmtAmount, groupSummary, importTallyXml, type ImportReport } from '@tallybook/core';
+import {
+  EXPORT_FILE_FORMATS, MASTER_EXPORT_TYPES, VOUCHER_EXPORT_TYPES, exportMastersJson, exportMastersXmlFor, exportVouchersJson, exportVouchersXmlFor, fmtAmount, fmtDate, groupSummary, importTallyXml,
+  type ImportReport, type MasterExportType, type VoucherExportType,
+} from '@tallybook/core';
+import { useNav } from '../nav.tsx';
+import { Form, type FieldDef, type FormHandle } from '../ui/Form.tsx';
 import { useScreen } from '../registry.ts';
 import { useStore } from '../store.tsx';
 import { MenuCard, useMenu } from '../ui/Menu.tsx';
@@ -142,32 +147,83 @@ export function ImportScreen() {
 }
 
 export function ExportScreen() {
+  const nav = useNav();
+  const items = [
+    { label: 'Masters', hotkey: 'M', run: () => nav.push(<ExportDataScreen target="masters" />) },
+    { label: 'Transactions', hotkey: 'T', run: () => nav.push(<ExportDataScreen target="transactions" />) },
+  ];
+  const { sel, setSel, keys } = useMenu(items);
+  useScreen({ title: 'Export', noPeriod: true, keys, buttons: [] });
+  return <MenuCard title="Export" items={items} sel={sel} setSel={setSel} width={332} />;
+}
+
+export function ExportDataScreen({ target }: { target: 'masters' | 'transactions' }) {
   const { books, company, period, toast } = useStore();
+  const form = useRef<FormHandle>(null);
   const [busy, setBusy] = useState(false);
-  const run = async (kind: 'masters' | 'vouchers') => {
-    if (busy) return;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const masters = target === 'masters';
+  const title = masters ? 'Export Masters' : 'Export Transactions';
+  const fields: FieldDef[] = masters
+    ? [
+        { key: 'type', label: 'Type of Master', kind: 'picker', title: 'Type of Master', options: MASTER_EXPORT_TYPES.map((t) => ({ id: t, label: t })), initial: { id: MASTER_EXPORT_TYPES[0], label: MASTER_EXPORT_TYPES[0] }, required: true },
+        { key: 'closing', label: 'Export closing balance as opening balance', kind: 'toggle', initial: false },
+        { key: 'asOn', label: '    Closing balance as on', kind: 'date', initial: period.to, visible: (v) => v.closing },
+      ]
+    : [
+        { key: 'type', label: 'Type of Voucher entries', kind: 'picker', title: 'Type of Voucher entries', options: VOUCHER_EXPORT_TYPES.map((t) => ({ id: t, label: t })), initial: { id: VOUCHER_EXPORT_TYPES[0], label: VOUCHER_EXPORT_TYPES[0] }, required: true },
+        { key: 'dependent', label: 'Include dependent masters', kind: 'toggle', initial: false },
+        { key: 'from', label: 'Period from', kind: 'date', initial: period.from, required: true },
+        { key: 'to', label: 'Period to', kind: 'date', initial: period.to, required: true },
+      ];
+  fields.push(
+    { key: 'format', label: 'File Format', kind: 'picker', title: 'List of File Formats', options: EXPORT_FILE_FORMATS.map((f) => ({ id: f, label: f })), initial: { id: EXPORT_FILE_FORMATS[1], label: EXPORT_FILE_FORMATS[1] }, required: true, heading: 'Export Settings' },
+    { key: 'folder', label: 'Folder Path', kind: 'text', initial: 'Chosen when saving' },
+    { key: 'file', label: 'File Name', kind: 'text', initial: masters ? 'Master' : 'Transactions', required: true }
+  );
+
+  const run = async () => {
+    if (busyRef.current) return;
+    const v = form.current?.submit();
+    if (!v) return;
+    const json = v.format === EXPORT_FILE_FORMATS[1];
     setBusy(true);
     try {
-      const xml = kind === 'masters' ? await exportMastersXml(books) : await exportVouchersXml(books, period.from, period.to);
-      const name = `${(company?.name ?? 'company').replace(/[^\w.-]+/g, '_')}_${kind}.xml`;
-      const saved = await saveTextFile(name, xml);
-      if (saved) toast(`Exported to ${saved}`, 'ok');
+      let text: string;
+      if (masters) {
+        const opts = { type: v.type as MasterExportType, closingAsOpening: v.closing && v.asOn ? { asOn: v.asOn as string } : null };
+        text = json ? await exportMastersJson(books, opts) : await exportMastersXmlFor(books, opts);
+      } else {
+        if (!v.from || !v.to || v.from > v.to) throw new Error('Enter a valid period');
+        const opts = { type: v.type as VoucherExportType, dependentMasters: !!v.dependent };
+        text = json ? await exportVouchersJson(books, v.from, v.to, opts) : await exportVouchersXmlFor(books, v.from, v.to, opts);
+      }
+      const base = String(v.file || (masters ? 'Master' : 'Transactions')).replace(/\.(xml|json)$/i, '').replace(/[\\/:*?"<>|]+/g, '_');
+      const saved = await saveTextFile(`${base}.${json ? 'json' : 'xml'}`, text, json ? 'application/json' : 'text/xml');
+      if (saved) toast(`${title.replace('Export ', '')} of ${company?.name ?? 'the company'} exported to ${saved}`, 'ok');
     } catch (e) {
       toast((e as Error).message, 'err');
     } finally {
       setBusy(false);
     }
   };
-  const items = [
-    { label: 'Masters (groups, ledgers, voucher types)', run: () => void run('masters') },
-    { label: 'Vouchers for the current period', run: () => void run('vouchers') },
-  ];
-  const { sel, setSel, keys } = useMenu(items);
-  useScreen({ title: 'Export Data', keys, buttons: [] });
+
+  useScreen({
+    title,
+    noPeriod: true,
+    keys: { 'Ctrl+A': () => void run(), 'Alt+E': () => void run() },
+    buttons: [{ key: 'Ctrl+A', label: 'Export', run: () => void run() }],
+  });
+
   return (
-    <div className="space-y-3">
-      <MenuCard title="Export (Tally XML)" items={items} sel={sel} setSel={setSel} width={420} />
-      <p className="max-w-xl text-xs text-tb-muted">The files use Tally's XML structure, so they can be imported back into Tally. Vouchers are exported for the current period ({period.from} to {period.to}); change it with Alt+F2 on any report.</p>
+    <div className="max-w-[640px] border border-tb-line bg-tb-paper p-4">
+      <h3 className="mb-3 border-b border-tb-line pb-1 text-[15px] font-semibold">{title}</h3>
+      <Form ref={form} fields={fields} onDone={() => void run()} labelWidth={330} />
+      <p className="mt-4 text-xs text-tb-muted">
+        {masters ? 'Groups, ledgers, voucher types, units, godowns, stock groups, categories, stock items and cost centres' : `Vouchers from ${fmtDate(period.from)} to ${fmtDate(period.to)} by default`} are exported in Tally's structure, so TallyPrime can import the file (Alt+O). Ctrl+A exports.
+      </p>
+      {busy && <div className="mt-2 font-bold">Exporting...</div>}
     </div>
   );
 }

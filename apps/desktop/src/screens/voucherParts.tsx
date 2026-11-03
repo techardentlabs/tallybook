@@ -19,7 +19,11 @@ import {
   type VoucherType,
   type VoucherClass,
   expandClass,
+  applyInvoiceClass,
+  invoiceAdditional,
+  setVoucherClassUse,
 } from '@tallybook/core';
+import { classLineRate, signedAmount } from './itemInvoice.tsx';
 import { PickerInput, type Opt } from '../ui/PickerInput.tsx';
 import { ForexEntryDialog, forexSummary, useCurrencies } from './Currency.tsx';
 import { useStore } from '../store.tsx';
@@ -33,6 +37,7 @@ export interface BuiltVoucher {
   stock?: StockLineInput[];
   track?: { index: number; against: number; qty: number }[];
   batches?: { index: number; allocs: BatchAllocInput[] }[];
+  after?: (voucherId: number) => Promise<void>;
   forex?: { index: number; forex: EntryForexInput }[];
 }
 
@@ -42,6 +47,7 @@ export interface BodyHandle {
   focusFirst: () => void;
   removeLine: () => void;
   isDirty: () => boolean;
+  multiMode?: () => void;
 }
 
 export interface BodyProps {
@@ -54,6 +60,8 @@ export interface BodyProps {
   onDirty: () => void;
   initial?: InitialData;
   vclass?: VoucherClass | null;
+  voucherId?: number;
+  pos?: boolean;
 }
 
 export interface InitialData {
@@ -63,6 +71,7 @@ export interface InitialData {
   reverse_charge?: boolean;
   lines?: { ledgerId: number; taxable: number; rate_bp: number }[];
   items?: { item_id: number; godown_id: number | null; ledgerId: number | null; qty: number; rate: number; tracked?: number; batches?: BatchAllocInput[] }[];
+  entries?: { ledger_id: number; amount: number }[];
 }
 
 interface Row {
@@ -462,6 +471,9 @@ export const InvoiceBody = forwardRef<BodyHandle, BodyProps>(function InvoiceBod
   const [party, setParty] = useState<Ledger | null>(initialParty ?? null);
   const [pos, setPos] = useState(initial?.place_of_supply ?? '');
   const [rcm, setRcm] = useState(!!initial?.reverse_charge);
+  const cls = props.vclass ?? null;
+  const [userVals, setUserVals] = useState<Record<number, string>>({});
+  const userNums = useMemo(() => Object.fromEntries(Object.entries(userVals).map(([k, v]) => [Number(k), parseAmount(v) ?? 0])), [userVals]);
   const [lines, setLines] = useState<Line[]>(() => {
     if (initial?.lines?.length) {
       return initial.lines.map((ln) => {
@@ -513,8 +525,10 @@ export const InvoiceBody = forwardRef<BodyHandle, BodyProps>(function InvoiceBod
       add('Integrated Tax', s.igst, ln.rate_bp);
     }
     const tax = [...byName.values()].reduce((s, v) => s + v, 0);
-    return { taxable, tax, total: taxable + tax, items: [...byName] };
-  }, [lines, intra, output]);
+    const extra = cls ? invoiceAdditional(cls, type.parent, { sales: taxable, tax, qty: 0, user: userNums }).filter((a) => !(a.remove_if_zero && a.amount === 0 && !a.editable)) : [];
+    return { taxable, tax, total: taxable + tax + extra.reduce((s, a) => s + a.amount, 0), items: [...byName], extra };
+  }, [lines, intra, output, cls, type.parent, userNums]);
+  const userCells = preview.extra.flatMap((a) => (a.editable ? [`u${a.line_id}`] : []));
 
   const updateLine = (i: number, patch: Partial<Line>) => {
     touch();
@@ -524,7 +538,26 @@ export const InvoiceBody = forwardRef<BodyHandle, BodyProps>(function InvoiceBod
   const finish = () => {
     if (!party) return toast('Select the party', 'err');
     if (!preview.taxable) return toast('Add at least one supply line', 'err');
+    if (userCells.length) return focus(userCells[0]);
     onFinish();
+  };
+  const userKeys = (cell: string, value: string, id: number) => (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const i = userCells.indexOf(cell);
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (value.trim()) {
+        const a = parseAmount(value);
+        if (a === null) return toast('Enter a valid amount', 'err');
+        setUserVals((u) => ({ ...u, [id]: fmtAmount(a) }));
+      }
+      if (i < userCells.length - 1) focus(userCells[i + 1]);
+      else onFinish();
+    } else if (e.key === 'Backspace' && value === '') {
+      e.preventDefault();
+      e.stopPropagation();
+      focus(i > 0 ? userCells[i - 1] : `l${linesRef.current.length - 1}-0`);
+    }
   };
 
   useImperativeHandle(
@@ -549,7 +582,9 @@ export const InvoiceBody = forwardRef<BodyHandle, BodyProps>(function InvoiceBod
             supply.map((l) => ({ ledger_id: Number(l.opt!.id), taxable: parseAmount(l.taxable) ?? 0, rate_bp: l.rate_bp })),
             { placeOfSupply: posCode }
           );
-          return { entries: plan.entries, party_id: party.id, place_of_supply: plan.place_of_supply, reverse_charge: rcm };
+          const entries = cls ? applyInvoiceClass(cls, type.parent, plan.entries, supply.length, { split: false, user: userNums }).entries : plan.entries;
+          const classId = cls?.id ?? null;
+          return { entries, party_id: party.id, place_of_supply: plan.place_of_supply, reverse_charge: rcm, after: (id: number) => setVoucherClassUse(books.db, id, classId).catch(() => undefined) };
         } catch (e) {
           toast((e as Error).message, 'err');
           return null;
@@ -561,6 +596,7 @@ export const InvoiceBody = forwardRef<BodyHandle, BodyProps>(function InvoiceBod
         setPartyText('');
         setPos('');
         setRcm(false);
+        setUserVals({});
         setLines([{ opt: null, text: '', taxable: '', rate_bp: 0, rateText: '' }]);
         focus('party');
       },
@@ -572,7 +608,7 @@ export const InvoiceBody = forwardRef<BodyHandle, BodyProps>(function InvoiceBod
       },
       isDirty: () => dirty.current,
     }),
-    [books, focus, posCode, party, rcm, toast, type.parent]
+    [books, focus, posCode, party, rcm, toast, type.parent, cls, userNums]
   );
 
   useEffect(() => {
@@ -727,6 +763,32 @@ export const InvoiceBody = forwardRef<BodyHandle, BodyProps>(function InvoiceBod
               </td>
             </tr>
           ))}
+          {preview.extra.map((a) => {
+            const cell = `u${a.line_id}`;
+            const v = userVals[a.line_id] ?? '';
+            return (
+              <tr key={cell}>
+                <td className="px-2 py-0.5 pl-10 font-bold italic">{a.ledger}</td>
+                <td className="px-2 py-0.5">{classLineRate(a)}</td>
+                <td className="px-2 py-0.5">
+                  {a.editable ? (
+                    <input
+                      className="tb-input tb-num w-full"
+                      data-cell={cell}
+                      value={v}
+                      onChange={(e) => {
+                        touch();
+                        setUserVals((u) => ({ ...u, [a.line_id]: e.target.value }));
+                      }}
+                      onKeyDown={userKeys(cell, v, a.line_id)}
+                    />
+                  ) : (
+                    <div className="tb-num pr-1">{a.amount ? signedAmount(a.amount) : ''}</div>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
 

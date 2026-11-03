@@ -2,6 +2,12 @@ import {
   OPEN_CREATE,
   OPEN_NONE,
   addCompanyEntry,
+  addGroupCompany,
+  alterGroupCompany,
+  companyFileFor,
+  isGroupEntry,
+  nextCompanyId,
+  removeCompanyEntry,
   findCompanyEntry,
   markCompanyOpened,
   requestCompanyOpen,
@@ -9,7 +15,7 @@ import {
   type CompanyEntry,
   type CompanyIndex,
 } from '@tallybook/core';
-import { flushStorage, type Registry } from './index.ts';
+import { flushStorage, type Attached, type Registry } from './index.ts';
 
 interface Session {
   registry: Registry;
@@ -71,3 +77,73 @@ export function openCompanyAfterReload(target: string): Promise<void> {
 export const switchCompany = (id: string) => openCompanyAfterReload(id);
 export const shutCompany = () => openCompanyAfterReload(OPEN_NONE);
 export const createAnotherCompany = () => openCompanyAfterReload(OPEN_CREATE);
+
+export function isGroupCompanyOpen(): boolean {
+  return isGroupEntry(session?.entry);
+}
+
+export function createGroupCompany(name: string, members: string[]): Promise<CompanyEntry> {
+  return exclusive(async () => {
+    const s = need();
+    const index = await s.registry.load();
+    const id = nextCompanyId(index);
+    const next = addGroupCompany(index, { id, name, file: companyFileFor(id, s.registry.style), members });
+    await s.registry.save(next);
+    return findCompanyEntry(next, id)!;
+  });
+}
+
+export function alterGroup(id: string, patch: { name?: string; members?: string[] }): Promise<CompanyEntry> {
+  return exclusive(async () => {
+    const s = need();
+    const next = alterGroupCompany(await s.registry.load(), id, patch);
+    await s.registry.save(next);
+    if (s.entry?.id === id) s.entry = findCompanyEntry(next, id) ?? s.entry;
+    return findCompanyEntry(next, id)!;
+  });
+}
+
+export function deleteGroup(id: string): Promise<void> {
+  return exclusive(async () => {
+    const s = need();
+    const index = await s.registry.load();
+    if (!isGroupEntry(findCompanyEntry(index, id))) throw new Error('Only a Group Company can be deleted here');
+    await s.registry.save(removeCompanyEntry(index, id));
+  });
+}
+
+export function companyIsEncrypted(entry: CompanyEntry): Promise<boolean> {
+  return need().registry.isEncrypted(entry);
+}
+
+export function attachCompany(entry: CompanyEntry, opts: { readonly: boolean; password?: string }): Promise<Attached> {
+  return need().registry.attach(entry, opts);
+}
+
+export function newCompanyData(password?: string): Promise<{ entry: CompanyEntry; data: Attached }> {
+  return exclusive(async () => {
+    const s = need();
+    const index = await s.registry.load();
+    const id = nextCompanyId(index);
+    const entry: CompanyEntry = { id, name: '', file: companyFileFor(id, s.registry.style), last_opened: null };
+    const data = await s.registry.create(entry, password);
+    await s.registry.save(addCompanyEntry(index, { ...entry, name: `Company ${id}` }));
+    return { entry, data };
+  });
+}
+
+export function registerCompany(id: string, company: { name: string; fy_start?: string; fy_end?: string }): Promise<CompanyEntry> {
+  return exclusive(async () => {
+    const s = need();
+    const next = updateCompanyEntry(await s.registry.load(), id, company);
+    await s.registry.save(next);
+    return findCompanyEntry(next, id)!;
+  });
+}
+
+export function discardCompany(id: string): Promise<void> {
+  return exclusive(async () => {
+    const s = need();
+    await s.registry.save(removeCompanyEntry(await s.registry.load(), id));
+  });
+}

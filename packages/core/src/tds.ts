@@ -3,6 +3,10 @@ import type { Books } from './books.ts';
 import { clean, isIsoDate } from './util.ts';
 import { EINVOICE_SCHEMA } from './einvoice.ts';
 import { GSTRECON_SCHEMA } from './gstrecon.ts';
+import { interestMonths, interestOn, interestRule } from './tdsreturn.ts';
+
+export * from './tdsreturn.ts';
+export * from './etds.ts';
 
 export type TaxKind = 'TDS' | 'TCS';
 
@@ -139,7 +143,34 @@ export const TDS_SCHEMA: string[] = [
     deduction_id INTEGER NOT NULL REFERENCES tds_deductions(id) ON DELETE CASCADE,
     amount INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS tds_statements (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT 'TDS',
+    quarter_from TEXT NOT NULL,
+    quarter_to TEXT NOT NULL,
+    form TEXT NOT NULL DEFAULT '',
+    filed_on TEXT NOT NULL DEFAULT '',
+    token_no TEXT NOT NULL DEFAULT '',
+    UNIQUE (kind, quarter_from)
+  )`,
 ];
+
+const ADDED_COLUMNS: { table: string; column: string; ddl: string }[] = [
+  ...['interest', 'fee', 'others'].map((c) => ({ table: 'tds_challans', column: c, ddl: `ALTER TABLE tds_challans ADD COLUMN ${c} INTEGER NOT NULL DEFAULT 0` })),
+  ...['deductor_pan', 'person_pan', 'person_mobile', 'person_email', 'person_address', 'person_state', 'person_pincode', 'ao_approval', 'gov_state', 'gov_ministry', 'pao_code', 'ddo_code', 'ain'].map((c) => ({
+    table: 'tds_company', column: c, ddl: `ALTER TABLE tds_company ADD COLUMN ${c} TEXT NOT NULL DEFAULT ''`,
+  })),
+];
+
+async function addMissingColumns(db: Db): Promise<void> {
+  const have = new Map<string, Set<string>>();
+  const stmts: Stmt[] = [];
+  for (const c of ADDED_COLUMNS) {
+    if (!have.has(c.table)) have.set(c.table, new Set((await db.select<{ name: string }>(`SELECT name FROM pragma_table_info('${c.table}')`)).map((r) => r.name)));
+    if (!have.get(c.table)!.has(c.column)) stmts.push({ sql: c.ddl });
+  }
+  if (stmts.length) await db.batch(stmts);
+}
 
 export const STATUTORY_SCHEMA: string[] = [...TDS_SCHEMA, ...EINVOICE_SCHEMA, ...GSTRECON_SCHEMA];
 
@@ -156,6 +187,19 @@ export interface TdsCompany {
   person_designation: string;
   person_father: string;
   allow_rate_without_pan: number;
+  deductor_pan: string;
+  person_pan: string;
+  person_mobile: string;
+  person_email: string;
+  person_address: string;
+  person_state: string;
+  person_pincode: string;
+  ao_approval: string;
+  gov_state: string;
+  gov_ministry: string;
+  pao_code: string;
+  ddo_code: string;
+  ain: string;
 }
 
 export interface Nature {
@@ -268,6 +312,7 @@ async function seedVersions(db: Db): Promise<void> {
 
 export async function ensureStatutory(db: Db): Promise<void> {
   await db.batch(STATUTORY_SCHEMA.map((sql) => ({ sql })));
+  await addMissingColumns(db);
   await db.batch([{ sql: 'INSERT OR IGNORE INTO tds_company (id) VALUES (1)' }]);
   const n = (await one<{ c: number }>(db, 'SELECT COUNT(*) AS c FROM tds_nature'))!.c;
   if (!n)
@@ -358,7 +403,10 @@ export async function tdsCompany(db: Db): Promise<TdsCompany> {
   return (await one<TdsCompany>(db, 'SELECT * FROM tds_company WHERE id = 1'))!;
 }
 
-const COMPANY_TEXT = ['tan', 'tan_circle', 'deductor_type', 'deductor_branch', 'person_name', 'person_designation', 'person_father'] as const;
+const COMPANY_TEXT = [
+  'tan', 'tan_circle', 'deductor_type', 'deductor_branch', 'person_name', 'person_designation', 'person_father', 'deductor_pan', 'person_pan', 'person_mobile',
+  'person_email', 'person_address', 'person_state', 'person_pincode', 'ao_approval', 'gov_state', 'gov_ministry', 'pao_code', 'ddo_code', 'ain',
+] as const;
 const COMPANY_FLAGS = ['tds_enabled', 'tcs_enabled', 'einvoice_enabled', 'ewb_enabled', 'allow_rate_without_pan'] as const;
 
 export async function saveTdsCompany(db: Db, input: Partial<TdsCompany>): Promise<TdsCompany> {
@@ -367,11 +415,17 @@ export async function saveTdsCompany(db: Db, input: Partial<TdsCompany>): Promis
   const params: (string | number)[] = [];
   for (const f of COMPANY_TEXT) {
     if (input[f] === undefined) continue;
-    let v = clean(input[f], 100);
+    let v = clean(input[f], f === 'person_address' ? 250 : 100);
     if (f === 'tan') {
       v = v.toUpperCase();
       if (v && !/^[A-Z]{4}\d{5}[A-Z]$/.test(v)) throw new CoreError('invalid', 'TAN is invalid');
     }
+    if (f === 'deductor_pan' || f === 'person_pan') {
+      v = v.toUpperCase();
+      if (v && !/^[A-Z]{5}\d{4}[A-Z]$/.test(v)) throw new CoreError('invalid', 'PAN is invalid');
+    }
+    if (f === 'person_pincode' && v && !/^\d{6}$/.test(v)) throw new CoreError('invalid', 'PIN code must be 6 digits');
+    if (f === 'person_mobile' && v && !/^\d{10}$/.test(v)) throw new CoreError('invalid', 'Mobile number must be 10 digits');
     sets.push(`${f} = ?`);
     params.push(v);
   }
@@ -609,12 +663,13 @@ export interface TdsOutstanding {
   pending: number;
   due_on: string;
   overdue_days: number;
+  interest: number;
 }
 
-export function dueDate(date: string): string {
+export function dueDate(date: string, kind: TaxKind = 'TDS'): string {
   const y = Number(date.slice(0, 4));
   const m = Number(date.slice(5, 7));
-  if (m === 3) return `${y}-04-30`;
+  if (m === 3 && kind === 'TDS') return `${y}-04-30`;
   const ny = m === 12 ? y + 1 : y;
   const nm = m === 12 ? 1 : m + 1;
   return `${ny}-${String(nm).padStart(2, '0')}-07`;
@@ -625,7 +680,7 @@ function daysBetween(a: string, b: string): number {
 }
 
 export async function tdsOutstandings(db: Db, from: string, to: string, kind: TaxKind = 'TDS', asOn?: string): Promise<TdsOutstanding[]> {
-  const rows = await db.select<Omit<TdsOutstanding, 'pending' | 'due_on' | 'overdue_days'>>(
+  const rows = await db.select<Omit<TdsOutstanding, 'pending' | 'due_on' | 'overdue_days' | 'interest'>>(
     `SELECT d.id AS deduction_id, d.voucher_id, d.date, v.number, t.name AS type, d.party_id, p.name AS party, d.nature_id, n.name AS nature, n.section,
             d.deductee_type, d.total AS amount,
             COALESCE((SELECT SUM(cl.amount) FROM tds_challan_lines cl WHERE cl.deduction_id = d.id), 0) AS paid
@@ -642,8 +697,10 @@ export async function tdsOutstandings(db: Db, from: string, to: string, kind: Ta
   const vm = await versionMap(db);
   return rows
     .map((r) => {
-      const due = dueDate(r.date);
-      return { ...r, section: sectionOn({ id: r.nature_id, section: r.section }, vm.get(r.nature_id), r.date), pending: r.amount - r.paid, due_on: due, overdue_days: Math.max(0, daysBetween(due, today)) };
+      const due = dueDate(r.date, kind);
+      const pending = r.amount - r.paid;
+      const interest = today > due ? interestOn(pending, interestRule(kind, r.date).late_payment_bp, interestMonths(r.date, today)) : 0;
+      return { ...r, section: sectionOn({ id: r.nature_id, section: r.section }, vm.get(r.nature_id), r.date), pending, due_on: due, overdue_days: Math.max(0, daysBetween(due, today)), interest };
     })
     .filter((r) => r.pending > 0);
 }
@@ -693,6 +750,13 @@ export interface TdsPaymentInput {
   date: string;
   bank_id: number;
   deduction_ids: number[];
+  kind?: TaxKind;
+  quarter_from?: string;
+  interest?: number;
+  late_fee?: number;
+  others?: number;
+  interest_ledger_id?: number;
+  fee_ledger_id?: number;
   bsr_code?: string;
   challan_no?: string;
   challan_date?: string;
@@ -712,20 +776,40 @@ export function quarterOf(date: string): { from: string; to: string; q: number }
   return { q: 4, from: `${y}-01-01`, to: `${y}-03-31` };
 }
 
+async function expenseLedger(books: Books, name: string): Promise<number> {
+  const found = (await books.ledgers()).find((l) => l.name.toLowerCase() === name.toLowerCase());
+  if (found) return found.id;
+  const group = (await books.groups()).find((g) => g.name === 'Indirect Expenses')!;
+  return (await books.createLedger({ name, group_id: group.id })).id;
+}
+
+const amountOf = (v: unknown, label: string) => {
+  const n = Math.trunc(Number(v ?? 0) || 0);
+  if (n < 0) throw new CoreError('invalid', `${label} cannot be negative`);
+  return n;
+};
+
 export async function payTds(books: Books, input: TdsPaymentInput): Promise<{ voucher_id: number; challan_ids: number[] }> {
   const db = books.db;
   if (!isIsoDate(input.date)) throw new CoreError('invalid', 'Date is invalid');
-  if (!input.deduction_ids.length) throw new CoreError('invalid', 'Select at least one deduction');
+  const interest = amountOf(input.interest, 'Interest');
+  const fee = amountOf(input.late_fee, 'Late fee');
+  const others = amountOf(input.others, 'Others');
+  if (!input.deduction_ids.length && !(interest + fee + others)) throw new CoreError('invalid', 'Select at least one deduction');
+  if (!input.deduction_ids.length && !isIsoDate(input.quarter_from)) throw new CoreError('invalid', 'Select the quarter for the interest or late fee');
   const type = (await books.voucherTypes()).find((t) => t.parent === 'Payment');
   if (!type) throw new CoreError('not_found', 'Payment voucher type not found');
   const ph = input.deduction_ids.map(() => '?').join(',');
-  const ds = await db.select<{ id: number; duty_ledger_id: number | null; nature_id: number; total: number; date: string; section: string; deductee_type: string; resident: string; kind: string; paid: number }>(
-    `SELECT d.id, d.duty_ledger_id, d.nature_id, d.total, d.date, n.section, d.deductee_type, d.resident, d.kind,
-            COALESCE((SELECT SUM(cl.amount) FROM tds_challan_lines cl WHERE cl.deduction_id = d.id), 0) AS paid
-     FROM tds_deductions d JOIN tds_nature n ON n.id = d.nature_id WHERE d.id IN (${ph})`,
-    input.deduction_ids
-  );
+  const ds = input.deduction_ids.length
+    ? await db.select<{ id: number; duty_ledger_id: number | null; nature_id: number; total: number; date: string; section: string; deductee_type: string; resident: string; kind: string; paid: number }>(
+        `SELECT d.id, d.duty_ledger_id, d.nature_id, d.total, d.date, n.section, d.deductee_type, d.resident, d.kind,
+                COALESCE((SELECT SUM(cl.amount) FROM tds_challan_lines cl WHERE cl.deduction_id = d.id), 0) AS paid
+         FROM tds_deductions d JOIN tds_nature n ON n.id = d.nature_id WHERE d.id IN (${ph})`,
+        input.deduction_ids
+      )
+    : [];
   if (ds.length !== input.deduction_ids.length) throw new CoreError('not_found', 'Deduction not found');
+  const kind: TaxKind = (ds[0]?.kind as TaxKind) ?? (input.kind === 'TCS' ? 'TCS' : 'TDS');
   const vm = await versionMap(db);
   for (const d of ds) d.section = sectionOn({ id: d.nature_id, section: d.section }, vm.get(d.nature_id), d.date);
   const groups = new Map<string, typeof ds>();
@@ -737,28 +821,37 @@ export async function payTds(books: Books, input: TdsPaymentInput): Promise<{ vo
   }
   const byLedger = new Map<number, number>();
   for (const d of ds) byLedger.set(d.duty_ledger_id!, (byLedger.get(d.duty_ledger_id!) ?? 0) + (d.total - d.paid));
-  const total = [...byLedger.values()].reduce((s, v) => s + v, 0);
+  const extra: { ledger_id: number; amount: number }[] = [];
+  if (interest) extra.push({ ledger_id: input.interest_ledger_id ?? (await expenseLedger(books, `Interest on ${kind}`)), amount: interest });
+  if (fee + others) extra.push({ ledger_id: input.fee_ledger_id ?? (await expenseLedger(books, `${kind} Late Fee`)), amount: fee + others });
+  const total = [...byLedger.values()].reduce((s, v) => s + v, 0) + interest + fee + others;
   const v = await books.createVoucher({
     type_id: type.id,
     date: input.date,
     reference: clean(input.challan_no, 50),
     narration: clean(input.narration ?? '', 500),
-    entries: [...[...byLedger].map(([ledger_id, amt]) => ({ ledger_id, amount: amt })), { ledger_id: input.bank_id, amount: -total }],
+    entries: [...[...byLedger].map(([ledger_id, amt]) => ({ ledger_id, amount: amt })), ...extra, { ledger_id: input.bank_id, amount: -total }],
   });
   let cid = await nextId(db, 'tds_challans');
   let lid = await nextId(db, 'tds_challan_lines');
   const stmts: Stmt[] = [];
   const ids: number[] = [];
+  const common = [clean(input.bank_name, 100), clean(input.branch, 100), clean(input.cheque_no, 30), input.cheque_date ?? '', clean(input.bsr_code, 10), clean(input.challan_no, 20), input.challan_date ?? input.date];
+  const insert = `INSERT INTO tds_challans (id, voucher_id, kind, date, section, deductee_type, resident, bank_name, branch, cheque_no, cheque_date, bsr_code, challan_no, challan_date, quarter_from, quarter_to, amount, interest, fee, others)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  let first = true;
   for (const list of groups.values()) {
     const f = list[0];
     const q = quarterOf(f.date);
     const amt = list.reduce((s, d) => s + (d.total - d.paid), 0);
-    stmts.push({
-      sql: `INSERT INTO tds_challans (id, voucher_id, kind, date, section, deductee_type, resident, bank_name, branch, cheque_no, cheque_date, bsr_code, challan_no, challan_date, quarter_from, quarter_to, amount)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      params: [cid, v.id, f.kind, input.date, f.section, isCompanyType(f.deductee_type) ? 'Company' : 'Non Company', f.resident, clean(input.bank_name, 100), clean(input.branch, 100), clean(input.cheque_no, 30), input.cheque_date ?? '', clean(input.bsr_code, 10), clean(input.challan_no, 20), input.challan_date ?? input.date, q.from, q.to, amt],
-    });
+    stmts.push({ sql: insert, params: [cid, v.id, f.kind, input.date, f.section, isCompanyType(f.deductee_type) ? 'Company' : 'Non Company', f.resident, ...common, q.from, q.to, amt, first ? interest : 0, first ? fee : 0, first ? others : 0] });
+    first = false;
     for (const d of list) stmts.push({ sql: 'INSERT INTO tds_challan_lines (id, challan_id, deduction_id, amount) VALUES (?, ?, ?, ?)', params: [lid++, cid, d.id, d.total - d.paid] });
+    ids.push(cid++);
+  }
+  if (!groups.size) {
+    const q = quarterOf(input.quarter_from!);
+    stmts.push({ sql: insert, params: [cid, v.id, kind, input.date, '', '', 'Resident', ...common, q.from, q.to, 0, interest, fee, others] });
     ids.push(cid++);
   }
   await db.batch(stmts);
@@ -781,20 +874,24 @@ export interface ChallanRow {
   challan_date: string;
   vch_no: string;
   amount: number;
+  interest: number;
+  fee: number;
+  others: number;
+  kind: string;
   bank_name: string;
   branch: string;
   reconciled: number;
 }
 
-export async function tdsChallans(db: Db, from: string, to: string, onlyPending = false): Promise<ChallanRow[]> {
+export async function tdsChallans(db: Db, from: string, to: string, onlyPending = false, kind?: TaxKind): Promise<ChallanRow[]> {
   return db.select<ChallanRow>(
     `SELECT c.id, c.date, COALESCE((SELECT l.name FROM tds_challan_lines cl JOIN tds_deductions d ON d.id = cl.deduction_id JOIN ledgers l ON l.id = d.duty_ledger_id WHERE cl.challan_id = c.id LIMIT 1), c.kind) AS particulars,
             c.quarter_from, c.quarter_to, c.section, c.deductee_type, c.resident, c.cheque_no, c.cheque_date, c.bsr_code, c.challan_no, c.challan_date,
-            COALESCE(v.number, '') AS vch_no, c.amount, c.bank_name, c.branch, c.reconciled
+            COALESCE(v.number, '') AS vch_no, c.amount, c.interest, c.fee, c.others, c.kind, c.bank_name, c.branch, c.reconciled
      FROM tds_challans c LEFT JOIN vouchers v ON v.id = c.voucher_id
-     WHERE c.date >= ? AND c.date <= ? ${onlyPending ? 'AND c.reconciled = 0' : ''}
+     WHERE c.date >= ? AND c.date <= ? ${onlyPending ? 'AND c.reconciled = 0' : ''} ${kind ? 'AND c.kind = ?' : ''}
      ORDER BY c.date, c.id`,
-    [from, to]
+    kind ? [from, to, kind] : [from, to]
   );
 }
 
@@ -860,7 +957,7 @@ export async function form26Q(db: Db, from: string, to: string, kind: TaxKind = 
     delete d.nature_id;
   }
   deductions.sort((a, b) => a.section.localeCompare(b.section) || a.date.localeCompare(b.date));
-  const challans = await tdsChallans(db, from, to);
+  const challans = await tdsChallans(db, from, to, false, kind);
   const act = actOn(from);
   return {
     form: kind === 'TCS' ? (act === '2025' ? '143' : '27EQ') : act === '2025' ? '140' : '26Q',

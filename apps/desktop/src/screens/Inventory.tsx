@@ -24,8 +24,7 @@ import {
   type Godown,
   type StockGroup,
   type StockItem,
-  type Unit,
-} from '@tallybook/core';
+  type Unit, THIRD_PARTY_KINDS, updateGodown } from '@tallybook/core';
 import { Form, type FieldDef, type FormHandle } from '../ui/Form.tsx';
 import type { Opt } from '../ui/PickerInput.tsx';
 import { useScreen } from '../registry.ts';
@@ -143,20 +142,37 @@ export function StockCategoryForm() {
   );
 }
 
-export function GodownForm() {
-  const { books } = useStore();
+export function GodownForm({ id }: { id?: number } = {}) {
+  const { books, company } = useStore();
   const list = useList<Godown>(() => godowns(books.db));
-  const opts: Opt[] = [{ id: 0, label: 'Primary' }, ...list.map((g) => ({ id: g.id, label: g.name }))];
+  const cur = id ? list.find((g) => g.id === id) : undefined;
+  if (id && !cur) return null;
+  const opts: Opt[] = [{ id: 0, label: 'Primary' }, ...list.filter((g) => g.id !== id).map((g) => ({ id: g.id, label: g.name }))];
+  const tpOpts: Opt[] = THIRD_PARTY_KINDS.map((k, i) => ({ id: i, label: k }));
   return (
     <SimpleMaster
-      title="Godown Creation"
+      title={id ? 'Godown Alteration' : 'Godown Creation'}
       fields={[
-        { key: 'name', label: 'Name', kind: 'text', required: true },
-        { key: 'parent', label: 'Under', kind: 'picker', title: 'Godowns', options: opts, initial: opts[0], required: true },
+        { key: 'name', label: 'Name', kind: 'text', required: true, initial: cur?.name },
+        { key: 'parent', label: 'Under', kind: 'picker', title: 'Godowns', options: opts, initial: opts.find((o) => o.id === (cur?.parent_id ?? 0)) ?? opts[0], required: true },
+        ...(company?.job_work_enabled
+          ? [{ key: 'third_party', label: 'Job Work stock type', kind: 'picker' as const, title: 'Stock Types', options: tpOpts, initial: tpOpts[cur?.third_party ?? 0] }]
+          : []),
       ]}
-      onSave={async (v) => void (await createGodown(books.db, { name: String(v.name), parent_id: Number(v.parent) || null }))}
+      onSave={async (v) => {
+        const input = { name: String(v.name), parent_id: Number(v.parent) || null, third_party: Number(v.third_party) || 0 };
+        if (id) await updateGodown(books.db, id, input);
+        else await createGodown(books.db, input);
+      }}
     />
   );
+}
+
+export function GodownAlterList() {
+  const { books } = useStore();
+  const nav = useNav();
+  const list = useList<Godown>(() => godowns(books.db));
+  return <SelectList title="Godown Alteration" heading="List of Godowns" popOnSelect items={list.map((g) => ({ id: g.id, label: g.name }))} onSelect={(i) => nav.push(<GodownForm id={Number(i.id)} />)} onCreate={() => nav.push(<GodownForm />)} />;
 }
 
 export function StockItemForm({ id, presetName }: { id?: number; presetName?: string }) {

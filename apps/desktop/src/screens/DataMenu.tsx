@@ -10,6 +10,9 @@ import { useFilter } from './reportConfig.tsx';
 import { useMemo, useState } from 'react';
 import { vault } from '../db/index.ts';
 import { VaultPasswordPanel } from './Login.tsx';
+import { SplitMenu } from './SplitCompany.tsx';
+import { isGroupCompanyOpen } from '../db/companies.ts';
+import { GROUP_READ_ONLY } from '@tallybook/core';
 
 export function EditLogReport() {
   const { books } = useStore();
@@ -67,6 +70,7 @@ export function DataMenu() {
     if (ok) toast('Backup saved', 'ok');
   };
   const backup = async () => {
+    if (isGroupCompanyOpen()) return toast('Backup a Group Company by taking the backup of each member company', 'err');
     try {
       if (!vault().encrypted()) return await save(JSON.stringify(await createBackup(books.db)));
       setAsk({
@@ -91,6 +95,7 @@ export function DataMenu() {
     nav.pop();
   };
   const restore = async () => {
+    if (isGroupCompanyOpen()) return toast(GROUP_READ_ONLY, 'err');
     const f = await pickJsonFile();
     if (!f) return;
     let data: unknown;
@@ -122,6 +127,7 @@ export function DataMenu() {
     { label: 'Data Management', heading: true },
     { label: 'Backup', run: () => void backup(), hotkey: 'B' },
     { label: 'Restore', run: () => void restore(), hotkey: 'R' },
+    { label: 'Split', run: () => nav.push(<SplitMenu />), hotkey: 'S', hint: '>' },
     { label: 'Audit', heading: true },
     { label: 'Edit Log', run: () => nav.push(<EditLogReport />), hotkey: 'E' },
   ];

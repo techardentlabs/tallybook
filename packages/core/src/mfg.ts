@@ -1,3 +1,4 @@
+import { ORDER_PARENTS_SQL } from './schema.ts';
 import { CoreError, one, type Db, type Stmt } from './db.ts';
 import { newGuid } from './util.ts';
 import type { Books, VoucherRow } from './books.ts';
@@ -363,7 +364,7 @@ async function replay(db: Db, date: string, exceptVoucher?: number): Promise<{ p
   const cut = exceptVoucher ?? Number.MAX_SAFE_INTEGER;
   const moves = await db.select<{ item_id: number; qty: number; amount: number; parent: string }>(
     `SELECT m.item_id, m.qty, m.amount, t.parent FROM stock_movements m JOIN vouchers v ON v.id = m.voucher_id JOIN voucher_types t ON t.id = v.type_id
-     WHERE v.cancelled = 0 AND m.tracked = 0 AND t.parent NOT IN ('Sales Order', 'Purchase Order') AND v.id != ? AND (v.date < ? OR (v.date = ? AND v.id < ?))
+     WHERE v.cancelled = 0 AND m.tracked = 0 AND t.parent NOT IN ${ORDER_PARENTS_SQL} AND v.id != ? AND (v.date < ? OR (v.date = ? AND v.id < ?))
      ORDER BY v.date, v.id, m.seq`,
     [cut, date, date, cut]
   );

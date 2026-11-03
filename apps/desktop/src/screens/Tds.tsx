@@ -1,7 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DEDUCTEE_TYPES,
+  DEDUCTOR_CATEGORIES,
   IT_ACT_2025_FROM,
+  deductorCategory,
+  etdsForm,
+  etdsStatement,
+  interestIfPaidOn,
+  quarterOf,
+  saveStatementFiling,
+  statementFilings,
+  tdsInterestAndFee,
+  type EtdsStatement,
+  type QuarterLiability,
+  type TdsInterestRow,
   actName,
   deleteNature,
   deleteNatureVersion,
@@ -116,11 +128,15 @@ function FormScreen({ title, fields, onSave, onDelete, width = 'max-w-xl', label
   );
 }
 
+const CATEGORY_OPTS: Opt[] = DEDUCTOR_CATEGORIES.map((c) => ({ id: c.code, label: c.label }));
+const GOVT = ['A', 'S', 'D', 'E', 'G', 'H', 'L', 'N'];
+
 export function TdsDeductorForm() {
   const { books } = useStore();
   const ready = useStatutoryReady();
   const co = useLoad(() => (ready ? tdsCompany(books.db) : Promise.resolve(null)), [ready]);
   if (!co) return null;
+  const govt = (v: Record<string, any>) => GOVT.includes(String(v.category ?? ''));
   return (
     <FormScreen
       title="Company TDS Deductor Details"
@@ -128,17 +144,32 @@ export function TdsDeductorForm() {
       fields={[
         { key: 'tan', label: 'Tax deduction and collection Account Number (TAN)', kind: 'upper', initial: co.tan, maxLength: 10 },
         { key: 'tan_circle', label: 'TAN registration number', kind: 'upper', initial: co.tan_circle },
-        { key: 'deductor_type', label: 'Deductor type', kind: 'text', initial: co.deductor_type },
+        { key: 'deductor_pan', label: 'PAN of deductor (if different from company PAN)', kind: 'upper', initial: co.deductor_pan, maxLength: 10 },
+        { key: 'category', label: 'Deductor type', kind: 'picker', title: 'Deductor Types', options: CATEGORY_OPTS, initial: CATEGORY_OPTS.find((o) => o.id === deductorCategory(co.deductor_type)) },
         { key: 'deductor_branch', label: 'Deductor branch/division', kind: 'text', initial: co.deductor_branch },
+        { key: 'gov_ministry', label: 'Ministry name (code)', kind: 'text', initial: co.gov_ministry, visible: govt },
+        { key: 'gov_state', label: 'State name (code)', kind: 'text', initial: co.gov_state, visible: govt },
+        { key: 'pao_code', label: 'PAO code', kind: 'text', initial: co.pao_code, visible: govt },
+        { key: 'ddo_code', label: 'DDO code', kind: 'text', initial: co.ddo_code, visible: govt },
+        { key: 'ain', label: 'Account office identification number (AIN)', kind: 'text', initial: co.ain, visible: govt },
         { key: 'person_name', label: 'Name of person responsible', kind: 'text', initial: co.person_name, heading: 'Person Responsible Details' },
         { key: 'person_father', label: 'Son/daughter of', kind: 'text', initial: co.person_father },
         { key: 'person_designation', label: 'Designation', kind: 'text', initial: co.person_designation },
+        { key: 'person_pan', label: 'PAN', kind: 'upper', initial: co.person_pan, maxLength: 10 },
+        { key: 'person_address', label: 'Address (blank to use company address)', kind: 'text', initial: co.person_address },
+        { key: 'person_state', label: 'State', kind: 'text', initial: co.person_state },
+        { key: 'person_pincode', label: 'Pincode', kind: 'text', initial: co.person_pincode, maxLength: 6 },
+        { key: 'person_mobile', label: 'Mobile number', kind: 'text', initial: co.person_mobile, maxLength: 10 },
+        { key: 'person_email', label: 'E-mail', kind: 'text', initial: co.person_email },
         { key: 'allow_rate_without_pan', label: 'Ignore IT exemption limit for TDS deduction', kind: 'toggle', initial: !!co.allow_rate_without_pan, heading: 'Rate & Exemption Details' },
       ]}
       onSave={async (v) => {
+        const txt = (k: string) => String(v[k] ?? '');
         await saveTdsCompany(books.db, {
-          tan: v.tan, tan_circle: v.tan_circle, deductor_type: v.deductor_type, deductor_branch: v.deductor_branch,
-          person_name: v.person_name, person_father: v.person_father, person_designation: v.person_designation,
+          tan: v.tan, tan_circle: v.tan_circle, deductor_pan: txt('deductor_pan'), deductor_type: CATEGORY_OPTS.find((o) => o.id === v.category)?.label ?? co.deductor_type,
+          deductor_branch: v.deductor_branch, gov_ministry: txt('gov_ministry'), gov_state: txt('gov_state'), pao_code: txt('pao_code'), ddo_code: txt('ddo_code'), ain: txt('ain'),
+          person_name: v.person_name, person_father: v.person_father, person_designation: v.person_designation, person_pan: txt('person_pan'), person_address: txt('person_address'),
+          person_state: txt('person_state'), person_pincode: txt('person_pincode'), person_mobile: txt('person_mobile'), person_email: txt('person_email'),
           allow_rate_without_pan: v.allow_rate_without_pan ? 1 : 0,
         });
         return 'Company TDS deductor details saved';
@@ -518,6 +549,7 @@ export function TdsBillsReport({ kind, natureId, partyId, title }: { kind: TaxKi
             <th className={`${th} text-right`}>Pending Amount</th>
             <th className={th}>Due on</th>
             <th className={`${th} text-right`}>Overdue by days</th>
+            <th className={`${th} text-right`}>Interest</th>
           </tr>
         </thead>
         <tbody>
@@ -530,6 +562,7 @@ export function TdsBillsReport({ kind, natureId, partyId, title }: { kind: TaxKi
               <td className={`${num} font-bold`}>{fmtAmount(r.pending)}</td>
               <td className="px-2">{fmtDate(r.due_on)}</td>
               <td className={`${num} italic`}>{r.overdue_days}</td>
+              <td className={num}>{fmtAmount(r.interest)}</td>
             </tr>
           ))}
           <tr className="font-bold">
@@ -537,6 +570,7 @@ export function TdsBillsReport({ kind, natureId, partyId, title }: { kind: TaxKi
             <td className={tot}>{fmtAmount(rows.reduce((s, r) => s + r.amount, 0), false)} Cr</td>
             <td className={tot}>{fmtAmount(rows.reduce((s, r) => s + r.pending, 0), false)}</td>
             <td colSpan={2} className={grand} />
+            <td className={tot}>{fmtAmount(rows.reduce((s, r) => s + r.interest, 0))}</td>
           </tr>
         </tbody>
       </table>
@@ -566,14 +600,16 @@ export function TdsPaymentScreen({ kind = 'TDS' }: { kind?: TaxKind }) {
   };
   const pay = () => {
     if (!picked.size) return toast('Select at least one pending deduction with Space', 'err');
-    nav.push(<ChallanDetailsForm ids={[...picked]} onPaid={() => { setPicked(new Set()); bump(); }} />);
+    nav.push(<ChallanDetailsForm kind={kind} ids={[...picked]} onPaid={() => { setPicked(new Set()); bump(); }} />);
   };
+  const payFee = () => nav.push(<ChallanDetailsForm kind={kind} ids={[]} quarterFrom={quarterOf(period.to).from} onPaid={bump} />);
   useScreen({
     title: `${kind} Payment`,
-    keys: { ...keys, ...p.key, ' ': () => toggle(sel), Space: () => toggle(sel), Enter: () => toggle(sel), 'Ctrl+A': pay },
-    buttons: [p.button, { key: 'Ctrl+A', label: 'Pay', run: pay }],
+    keys: { ...keys, ...p.key, ' ': () => toggle(sel), Space: () => toggle(sel), Enter: () => toggle(sel), 'Ctrl+A': pay, 'Alt+L': payFee },
+    buttons: [p.button, { key: 'Ctrl+A', label: 'Pay', run: pay }, { key: 'Alt+L', label: 'Interest/Late Fee only', run: payFee }],
   });
   const total = rows.filter((r) => picked.has(r.deduction_id)).reduce((s, r) => s + r.pending, 0);
+  const interest = rows.filter((r) => picked.has(r.deduction_id)).reduce((s, r) => s + r.interest, 0);
   return (
     <Frame title={`${kind} Payment`}>
       <table className="w-full">
@@ -586,6 +622,7 @@ export function TdsPaymentScreen({ kind = 'TDS' }: { kind?: TaxKind }) {
             <th className={th}>Party's Name</th>
             <th className={th}>Due on</th>
             <th className={`${th} text-right`}>Pending Amount</th>
+            <th className={`${th} text-right`}>Interest</th>
           </tr>
         </thead>
         <tbody>
@@ -598,11 +635,13 @@ export function TdsPaymentScreen({ kind = 'TDS' }: { kind?: TaxKind }) {
               <td className="px-2">{r.party}</td>
               <td className="px-2">{fmtDate(r.due_on)}</td>
               <td className={num}>{fmtAmount(r.pending)}</td>
+              <td className={num}>{fmtAmount(r.interest)}</td>
             </tr>
           ))}
           <tr className="font-bold">
             <td colSpan={6} className={grand}>Selected Total</td>
             <td className={tot}>{fmtAmount(total, false)}</td>
+            <td className={tot}>{fmtAmount(interest)}</td>
           </tr>
         </tbody>
       </table>
@@ -611,18 +650,23 @@ export function TdsPaymentScreen({ kind = 'TDS' }: { kind?: TaxKind }) {
   );
 }
 
-export function ChallanDetailsForm({ ids, onPaid }: { ids: number[]; onPaid: () => void }) {
+export function ChallanDetailsForm({ ids, onPaid, kind = 'TDS', quarterFrom }: { ids: number[]; onPaid: () => void; kind?: TaxKind; quarterFrom?: string }) {
   const { books } = useStore();
-  const ledgers = useLoad(() => books.ledgers(), []);
-  if (!ledgers) return null;
-  const banks: Opt[] = ledgers.filter((l) => BANK_CASH.includes(l.group_name)).map((l) => ({ id: l.id, label: l.name }));
+  const today = new Date().toISOString().slice(0, 10);
+  const data = useLoad(async () => ({ ledgers: await books.ledgers(), interest: await interestIfPaidOn(books.db, ids, today) }), [ids.join(',')]);
+  if (!data) return null;
+  const banks: Opt[] = data.ledgers.filter((l) => BANK_CASH.includes(l.group_name)).map((l) => ({ id: l.id, label: l.name }));
   return (
     <FormScreen
       title="Challan Details"
       labelWidth={260}
       fields={[
-        { key: 'date', label: 'Date', kind: 'date', required: true, initial: new Date().toISOString().slice(0, 10) },
+        { key: 'date', label: 'Date', kind: 'date', required: true, initial: today },
         { key: 'bank', label: 'Bank Name', kind: 'picker', title: 'Ledger Accounts', options: banks, required: true },
+        ...(quarterFrom ? [{ key: 'quarter', label: 'Quarter from', kind: 'date' as const, required: true, initial: quarterFrom }] : []),
+        { key: 'interest', label: 'Interest', kind: 'amount', initial: data.interest, note: ids.length ? 'Computed for payment today; recomputed for the payment date if left unchanged' : undefined },
+        { key: 'fee', label: 'Late fee', kind: 'amount', initial: 0 },
+        { key: 'others', label: 'Penalty/Others', kind: 'amount', initial: 0 },
         { key: 'cheque_no', label: 'Cheque/DD No.', kind: 'text' },
         { key: 'cheque_date', label: 'Cheque/DD Date', kind: 'date' },
         { key: 'bsr', label: 'BSR Code', kind: 'text', maxLength: 7 },
@@ -631,10 +675,18 @@ export function ChallanDetailsForm({ ids, onPaid }: { ids: number[]; onPaid: () 
         { key: 'branch', label: 'Branch Name', kind: 'text' },
       ]}
       onSave={async (v) => {
+        const date = String(v.date);
+        const typed = Number(v.interest) || 0;
+        const interest = typed === data.interest && date !== today ? await interestIfPaidOn(books.db, ids, String(v.challan_date || date)) : typed;
         await payTds(books, {
-          date: String(v.date),
+          date,
           bank_id: Number(v.bank),
           deduction_ids: ids,
+          kind,
+          quarter_from: quarterFrom ? String(v.quarter || quarterFrom) : undefined,
+          interest,
+          late_fee: Number(v.fee) || 0,
+          others: Number(v.others) || 0,
           bsr_code: String(v.bsr),
           challan_no: String(v.challan_no),
           challan_date: v.challan_date || undefined,
@@ -705,7 +757,7 @@ export function TdsChallanReconciliationReport() {
           ))}
           <tr className="font-bold">
             <td colSpan={12} className={grand}>Grand Total</td>
-            <td className={tot}>{fmtAmount(rows.reduce((s, r) => s + r.amount, 0), false)}</td>
+            <td className={tot}>{fmtAmount(rows.reduce((s, r) => s + r.amount + r.interest + r.fee + r.others, 0), false)}</td>
           </tr>
         </tbody>
       </table>
@@ -730,22 +782,29 @@ function FragmentChallan({ r, on, onHover, onOpen }: { r: ChallanRow; on: boolea
         <td className="px-2">{r.challan_no}</td>
         <td className="px-2">{r.challan_date ? fmtDate(r.challan_date) : ''}</td>
         <td className="px-2">{r.vch_no}</td>
-        <td className={num}>{fmtAmount(r.amount)}</td>
+        <td className={num}>{fmtAmount(r.amount + r.interest + r.fee + r.others)}</td>
       </tr>
       <tr className={on ? 'bg-tb-sel text-tb-sel-ink' : ''}>
         <td />
-        <td colSpan={12} className="px-2 text-xs italic">Bank Name : {r.bank_name}   Branch Name : {r.branch}</td>
+        <td colSpan={12} className="px-2 text-xs italic">
+          Bank Name : {r.bank_name}   Branch Name : {r.branch}
+          {r.interest || r.fee || r.others ? `   Tax : ${fmtAmount(r.amount, false)}   Interest : ${fmtAmount(r.interest, false)}   Late Fee : ${fmtAmount(r.fee, false)}   Others : ${fmtAmount(r.others, false)}` : ''}
+        </td>
       </tr>
     </>
   );
 }
 
-export function Form26QReport() {
+export function Form26QReport({ kind = 'TDS' }: { kind?: TaxKind } = {}) {
   const { books, period, toast } = useStore();
+  const nav = useNav();
   const p = usePeriodKey();
   const flt = useFilter();
   const ready = useStatutoryReady();
-  const data = useLoad(async () => (ready ? form26Q(books.db, period.from, period.to) : null), [period, ready]);
+  const data = useLoad(async () => (ready ? form26Q(books.db, period.from, period.to, kind) : null), [period, ready, kind]);
+  const formName = data?.form ?? etdsForm(kind, period.from);
+  const legacy = kind === 'TCS' ? '27EQ' : '26Q';
+  const eReturn = () => nav.push(<EtdsExportScreen kind={kind} quarterDate={period.from} />);
   const rows = useMemo(() => (data?.deductions ?? []).filter((r) => flt.match(r.party, r.pan, r.section)), [data, flt]);
   const { sel, setSel, keys } = useSel(rows.length);
   const exportCsv = async () => {
@@ -757,13 +816,13 @@ export function Form26QReport() {
     if (await saveTextFile(`Form${data.form}.csv`, lines.map((l) => l.map(csvEscape).join(',')).join('\n'), 'text/csv')) toast('Exported', 'ok');
   };
   useScreen({
-    title: data?.form === '140' ? 'Form 140' : 'Form 26Q',
-    keys: { ...keys, ...p.key, ...flt.key, 'Alt+E': () => void exportCsv() },
-    buttons: [p.button, flt.button, { key: 'Alt+E', label: 'Export (CSV)', run: () => void exportCsv() }],
+    title: `Form ${formName}`,
+    keys: { ...keys, ...p.key, ...flt.key, 'Alt+E': () => void exportCsv(), 'Ctrl+E': eReturn },
+    buttons: [p.button, flt.button, { key: 'Alt+E', label: 'Export (CSV)', run: () => void exportCsv() }, { key: 'Ctrl+E', label: 'Export e-Return', run: eReturn }],
   });
   return (
     <Frame
-      title={data?.form === '140' ? 'Form 140 (Earlier Form 26Q) - Deduction Summary' : 'Form 26Q - Deduction Summary'}
+      title={formName !== legacy ? `Form ${formName} (Earlier Form ${legacy}) - ${kind === 'TCS' ? 'Collection' : 'Deduction'} Summary` : `Form ${formName} - ${kind === 'TCS' ? 'Collection' : 'Deduction'} Summary`}
       subtitle={`TAN: ${data?.tan ?? ''}   ${actName(data?.act ?? '1961')}   ${fmtDate(period.from)} to ${fmtDate(period.to)}`}
     >
       {flt.bar}
@@ -839,6 +898,208 @@ export function Form26QReport() {
         </>
       )}
       {data && rows.length === 0 && <div className="py-3 text-tb-muted">No deductions in this period.</div>}
+    </Frame>
+  );
+}
+
+export function EtdsExportScreen({ kind, quarterDate }: { kind: TaxKind; quarterDate: string }) {
+  const { books, toast } = useStore();
+  const dialogs = useDialogs();
+  const ready = useStatutoryReady();
+  const [qDate, setQDate] = useState(quarterOf(quarterDate).from);
+  const data = useLoad<EtdsStatement | null>(async () => (ready ? etdsStatement(books.db, kind, qDate) : null), [ready, kind, qDate]);
+  const shift = (n: number) => {
+    const [y, m] = qDate.split('-').map(Number);
+    const t = new Date(Date.UTC(y, m - 1 + n * 3, 1)).toISOString().slice(0, 10);
+    setQDate(quarterOf(t).from);
+  };
+  const save = async () => {
+    if (!data) return;
+    if (data.errors.length && !(await dialogs.confirm('The statement has exceptions and will be rejected by the File Validation Utility. Export anyway ?', { title: 'Export', def: false }))) return;
+    if (await saveTextFile(data.file_name, data.text, 'text/plain')) toast(`Form ${data.form} exported`, 'ok');
+  };
+  useScreen({
+    title: 'Export e-Return',
+    noPeriod: true,
+    keys: { 'Ctrl+A': () => void save(), 'Alt+E': () => void save(), PageUp: () => shift(-1), PageDown: () => shift(1) },
+    buttons: [{ key: 'Ctrl+A', label: 'Export', run: () => void save() }, { key: 'PageUp', label: 'Prev Quarter', run: () => shift(-1) }, { key: 'PageDown', label: 'Next Quarter', run: () => shift(1) }],
+  });
+  if (!data) return null;
+  const deductees = data.challans.reduce((s, c) => s + c.deductees.length, 0);
+  const kv: [string, string][] = [
+    ['Form', `Form ${data.form} (${actName(data.act)})`],
+    ['Quarter', `Q${data.quarter}   ${fmtDate(data.from)} to ${fmtDate(data.to)}`],
+    ['File format', data.layout],
+    ['Validate with', `Protean e-TDS/TCS File Validation Utility (FVU) version ${data.fvu}`],
+    ['Challans', String(data.challans.length)],
+    [kind === 'TCS' ? 'Collectee records' : 'Deductee records', String(deductees)],
+    ['Total deposit as per challans', fmtAmount(data.challans.reduce((s, c) => s + c.total, 0), false)],
+    ['File name', data.file_name],
+  ];
+  return (
+    <Frame title="Export e-Return" subtitle={`${kind} quarterly statement`} plain>
+      <div className="max-w-3xl text-[15px]">
+        {kv.map(([k, v]) => (
+          <div key={k} className="flex">
+            <span className="w-72">{k}</span>
+            <span className="mr-2">:</span>
+            <span className="font-semibold">{v}</span>
+          </div>
+        ))}
+        <div className="mt-4 font-semibold">Exceptions</div>
+        {data.errors.length === 0 && <div className="text-tb-muted">None. The file is ready for validation.</div>}
+        {data.errors.map((e) => (
+          <div key={e} className="text-red-700">{e}</div>
+        ))}
+        {data.warnings.map((w) => (
+          <div key={w} className="italic text-tb-muted">{w}</div>
+        ))}
+        <div className="mt-4 text-xs text-tb-muted">
+          Statements for quarters up to FY 2025-26 use Form {kind === 'TCS' ? '27EQ' : '26Q'} (FVU 9.5); quarters of tax year 2026-27 onwards use Form {kind === 'TCS' ? '143' : '140'} under the Income-tax Act, 2025 (FVU 1.2). Import the challan status (CSI) file in the FVU to validate.
+        </div>
+      </div>
+    </Frame>
+  );
+}
+
+export function StatementFilingForm({ kind, q }: { kind: TaxKind; q: QuarterLiability }) {
+  const { books } = useStore();
+  const loaded = useLoad(async () => ({ f: (await statementFilings(books.db, kind)).find((f) => f.quarter_from === q.from) ?? null }), [kind, q.from]);
+  if (!loaded) return null;
+  const data = loaded.f;
+  return (
+    <FormScreen
+      title={`Form ${q.form} Q${q.quarter} Filing Details`}
+      labelWidth={260}
+      fields={[
+        { key: 'filed_on', label: 'Date of filing', kind: 'date', initial: data?.filed_on || '' },
+        { key: 'token', label: 'Token/receipt number (15 digits)', kind: 'text', initial: data?.token_no ?? '', maxLength: 15 },
+      ]}
+      onSave={async (v) => {
+        await saveStatementFiling(books.db, { kind, quarter_from: q.from, filed_on: String(v.filed_on || ''), token_no: String(v.token || '') });
+        return 'Filing details saved';
+      }}
+    />
+  );
+}
+
+const INTEREST_NOTE: Record<TaxKind, string> = {
+  TDS: 'Interest on late payment: 1.5% per month or part of a month from the date of deduction to the date of payment (s.201(1A)(ii) of the Income-tax Act, 1961; s.398(3)(a)(ii) of the Income-tax Act, 2025), on the tax rounded down to a multiple of Rs. 100, counting calendar months as CPC-TDS does. Late fee: Rs. 200 per day after the due date of the statement, limited to the tax deducted (s.234E; s.427).',
+  TCS: 'Interest on late payment: 1% per month or part of a month for collections up to 31-03-2026 (s.206C(7) of the Income-tax Act, 1961) and 1.5% for collections from 01-04-2026 (s.398(3)(a)(ii) of the Income-tax Act, 2025), from the date of collection to the date of payment, counting calendar months. Late fee: Rs. 200 per day after the due date of the statement, limited to the tax collected (s.234E; s.427).',
+};
+
+export function TdsInterestReport({ kind = 'TDS' }: { kind?: TaxKind }) {
+  const { books, period } = useStore();
+  const nav = useNav();
+  const p = usePeriodKey();
+  const flt = useFilter();
+  const ready = useStatutoryReady();
+  const [detail, setDetail] = useState(false);
+  const data = useLoad(async () => (ready ? tdsInterestAndFee(books.db, period.from, period.to, kind, new Date().toISOString().slice(0, 10)) : null), [ready, period, kind]);
+  const rows: TdsInterestRow[] = useMemo(() => (data?.rows ?? []).filter((r) => r.interest && flt.match(r.party, r.nature, r.section)), [data, flt]);
+  const quarters = data?.quarters ?? [];
+  const count = detail ? rows.length : quarters.length;
+  const { sel, setSel, keys } = useSel(count);
+  const open = () => {
+    if (detail) return rows[sel] && nav.push(<VoucherScreen voucherId={rows[sel].voucher_id} />);
+    if (quarters[sel]) nav.push(<StatementFilingForm kind={kind} q={quarters[sel]} />);
+  };
+  const toggle = () => setDetail((d) => !d);
+  useScreen({
+    title: `${kind} Interest and Late Fee`,
+    keys: { ...keys, ...p.key, ...flt.key, F5: toggle, Enter: open, 'Alt+F': open },
+    buttons: [p.button, { key: 'F5', label: detail ? 'Quarter-wise' : 'Deduction-wise', run: toggle }, flt.button, ...(detail ? [] : [{ key: 'Alt+F', label: 'Filing Details', run: open }])],
+  });
+  if (!data) return null;
+  const sum = (f: (q: QuarterLiability) => number) => fmtAmount(quarters.reduce((s, q) => s + f(q), 0), false);
+  return (
+    <Frame title={`${kind} Interest and Late Fee`} subtitle={`${fmtDate(period.from)} to ${fmtDate(period.to)}   Interest as on ${fmtDate(new Date().toISOString().slice(0, 10))}`}>
+      {flt.bar}
+      {detail ? (
+        <table className="w-full">
+          <thead>
+            <tr className="text-left">
+              <th className={th}>Date</th>
+              <th className={th}>Ref. No.</th>
+              <th className={th}>Party's Name</th>
+              <th className={th}>Section</th>
+              <th className={`${th} text-right`}>{kind} Amount</th>
+              <th className={th}>Due on</th>
+              <th className={th}>Paid on</th>
+              <th className={`${th} text-right`}>Months</th>
+              <th className={th}>Interest u/s</th>
+              <th className={`${th} text-right`}>Interest</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={r.deduction_id} className={rowCls(i === sel)} onMouseEnter={() => setSel(i)} onClick={() => nav.push(<VoucherScreen voucherId={r.voucher_id} />)}>
+                <td className="px-2">{fmtDate(r.date)}</td>
+                <td className="px-2">{r.type} / {r.number}</td>
+                <td className="px-2">{r.party}</td>
+                <td className="px-2">{r.section}</td>
+                <td className={num}>{fmtAmount(r.amount)}</td>
+                <td className="px-2">{fmtDate(r.due_on)}</td>
+                <td className="px-2">{r.parts.filter((x) => x.interest).map((x) => (x.date ? fmtDate(x.date) : 'Not paid')).join(', ')}</td>
+                <td className={num}>{r.parts.filter((x) => x.interest).map((x) => x.months).join(', ')}</td>
+                <td className="px-2">{r.interest_section} @ {r.rate_bp / 100}% p.m.</td>
+                <td className={num}>{fmtAmount(r.interest)}</td>
+              </tr>
+            ))}
+            <tr className="font-bold">
+              <td colSpan={9} className={grand}>Grand Total</td>
+              <td className={tot}>{fmtAmount(rows.reduce((s, r) => s + r.interest, 0), false)}</td>
+            </tr>
+          </tbody>
+        </table>
+      ) : (
+        <table className="w-full">
+          <thead>
+            <tr className="text-left">
+              <th className={th}>Quarter</th>
+              <th className={th}>Form</th>
+              <th className={`${th} text-right`}>{kind} Amount</th>
+              <th className={`${th} text-right`}>Deposited</th>
+              <th className={`${th} text-right`}>Interest</th>
+              <th className={`${th} text-right`}>Interest Paid</th>
+              <th className={th}>Return Due on</th>
+              <th className={th}>Filed on</th>
+              <th className={`${th} text-right`}>Days Late</th>
+              <th className={`${th} text-right`}>Late Fee</th>
+              <th className={`${th} text-right`}>Late Fee Paid</th>
+            </tr>
+          </thead>
+          <tbody>
+            {quarters.map((q, i) => (
+              <tr key={q.from} className={rowCls(i === sel)} onMouseEnter={() => setSel(i)} onClick={() => nav.push(<StatementFilingForm kind={kind} q={q} />)}>
+                <td className="px-2">Q{q.quarter} ({fmtDate(q.from)} to {fmtDate(q.to)})</td>
+                <td className="px-2">{q.form}</td>
+                <td className={num}>{fmtAmount(q.tax)}</td>
+                <td className={num}>{fmtAmount(q.deposited)}</td>
+                <td className={num}>{fmtAmount(q.interest)}</td>
+                <td className={num}>{fmtAmount(q.interest_paid)}</td>
+                <td className="px-2">{fmtDate(q.statement_due)}</td>
+                <td className="px-2">{q.filed_on ? fmtDate(q.filed_on) : 'Not filed'}</td>
+                <td className={num}>{q.late_days || ''}</td>
+                <td className={num}>{fmtAmount(q.late_fee)}</td>
+                <td className={num}>{fmtAmount(q.fee_paid)}</td>
+              </tr>
+            ))}
+            <tr className="font-bold">
+              <td colSpan={2} className={grand}>Grand Total</td>
+              <td className={tot}>{sum((q) => q.tax)}</td>
+              <td className={tot}>{sum((q) => q.deposited)}</td>
+              <td className={tot}>{sum((q) => q.interest)}</td>
+              <td className={tot}>{sum((q) => q.interest_paid)}</td>
+              <td colSpan={3} className={grand} />
+              <td className={tot}>{sum((q) => q.late_fee)}</td>
+              <td className={tot}>{sum((q) => q.fee_paid)}</td>
+            </tr>
+          </tbody>
+        </table>
+      )}
+      <div className="mt-2 text-xs text-tb-muted">{INTEREST_NOTE[kind]}</div>
+      {count === 0 && <div className="py-3 text-tb-muted">{detail ? 'No interest payable.' : `No ${kind} in this period.`}</div>}
     </Frame>
   );
 }

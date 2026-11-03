@@ -5,6 +5,7 @@ import { QTY_SCALE } from './inventory.ts';
 import { ageOn, addMonthsIso, computeGratuity, defaultTaxRules, regimeLabel, roundToTen, taxOnIncome, type GratuityResult, type ServiceSpan, type TaxOnIncome, type TaxRegime, type TaxRules } from './incometax.ts';
 
 export * from './incometax.ts';
+export * from './pfesi.ts';
 
 export const PAYROLL_VOUCHER_TYPE = 'Payroll';
 

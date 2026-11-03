@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { fmtDate, parseDate } from '@tallybook/core';
+import { fmtDate, parseDate, isGroupEntry } from '@tallybook/core';
 import {
   ACCESS_NAMES,
+  PREDEFINED_VOUCHER_TYPES,
   SECURITY_FACILITIES,
+  accessNamesFor,
+  builtinLevels,
   SECURITY_ROLES,
   baseAccess,
   disableSecurity,
@@ -296,7 +299,7 @@ export function UserRolesScreen() {
         <thead>
           <tr>
             <th className={`${th} text-left`}>Name of Security Level</th>
-            <th className={`${th} text-left`}>Use Basic Facilities of</th>
+            <th className={`${th} text-left`}>Use Behaviour as</th>
           </tr>
         </thead>
         <tbody>
@@ -313,14 +316,22 @@ export function UserRolesScreen() {
   );
 }
 
+type AccessRow = { access: AccessName; facility: string };
+
+const toRows = (r: Record<string, AccessName>): AccessRow[] => Object.entries(r).map(([facility, access]) => ({ facility, access }));
+const toRecord = (rows: AccessRow[]): Record<string, AccessName> => Object.fromEntries(rows.map((r) => [r.facility, r.access]));
+
+const END_OF_LIST = 'End of List';
+
 export function SecurityLevelScreen({ name }: { name: string }) {
   const { books, bump, toast, company } = useStore();
   const nav = useNav();
   const level = useLoad(() => securityLevel(books.db, name), [name]);
+  const voucherTypes = useLoad(() => books.voucherTypes(), []);
   const [v, setV] = useState<MiniValues>({});
-  const [disallow, setDisallow] = useState<string[]>([]);
-  const [allow, setAllow] = useState<Record<string, AccessName>>({});
+  const [lists, setLists] = useState<[AccessRow[], AccessRow[]]>([[], []]);
   const [inTable, setInTable] = useState(false);
+  const [col, setCol] = useState<0 | 1>(0);
   const [row, setRow] = useState(0);
   useEffect(() => {
     if (!level) return;
@@ -331,20 +342,30 @@ export function SecurityLevelScreen({ name }: { name: string }) {
       cutoff: level.cutoff_date ? fmtDate(level.cutoff_date) : '',
       views: yn(level.save_views),
       delviews: yn(level.delete_views),
+      whatsapp: yn(level.whatsapp_nos),
       print: yn(level.print_rules),
       tax: yn(level.override_tax),
       onacc: yn(level.exclude_on_account),
       newno: yn(level.exclude_new_number),
       connect: yn(level.allow_connect),
       tnet: yn(level.tallynet_auth),
+      idle: yn(level.shut_on_idle),
+      mins: level.idle_minutes ? String(level.idle_minutes) : '',
     });
-    setDisallow(level.disallow);
-    setAllow(level.allow);
+    setLists([toRows(level.disallow), toRows(level.allow)]);
   }, [level]);
-  const facilities = SECURITY_FACILITIES;
+  const facilityItems = useMemo(() => {
+    const fixed = SECURITY_FACILITIES.map((f) => ({ id: f, label: f }));
+    const vts = [...new Set([...PREDEFINED_VOUCHER_TYPES, ...(voucherTypes ?? []).map((t) => t.name)])]
+      .filter((n) => !SECURITY_FACILITIES.includes(n))
+      .sort((a, b) => a.localeCompare(b))
+      .map((n) => ({ id: n, label: n, sub: 'Voucher Types' }));
+    return [...fixed, ...vts];
+  }, [voucherTypes]);
   const save = async () => {
     try {
       const cutoff = v.cutoff ? parseDate(v.cutoff, company?.fy_start ?? '') : null;
+      if (v.cutoff && !cutoff) throw new Error('Enter a valid cut-off date');
       await saveSecurityLevel(books.db, {
         name: v.name,
         basis: v.basis as SecurityRole,
@@ -352,14 +373,17 @@ export function SecurityLevelScreen({ name }: { name: string }) {
         cutoff_date: cutoff || null,
         save_views: isYes(v.views),
         delete_views: isYes(v.views) && isYes(v.delviews),
+        whatsapp_nos: isYes(v.whatsapp),
         print_rules: isYes(v.print),
         override_tax: isYes(v.tax),
         exclude_on_account: isYes(v.onacc),
         exclude_new_number: isYes(v.newno),
         allow_connect: isYes(v.connect),
         tallynet_auth: isYes(v.tnet),
-        disallow,
-        allow,
+        shut_on_idle: isYes(v.idle),
+        idle_minutes: isYes(v.idle) ? Number(v.mins) || 0 : 0,
+        disallow: toRecord(lists[0]),
+        allow: toRecord(lists[1]),
       });
       bump();
       toast('Security level saved', 'ok');
@@ -368,62 +392,130 @@ export function SecurityLevelScreen({ name }: { name: string }) {
       toast((e as Error).message, 'err');
     }
   };
-  const cycleAllow = (d: 1 | -1) => {
-    const f = facilities[row];
-    const opts: (AccessName | '')[] = ['', ...ACCESS_NAMES];
-    const cur = opts.indexOf(allow[f] ?? '');
-    const next = opts[(cur + d + opts.length) % opts.length];
-    setAllow((a) => {
-      const n = { ...a };
-      if (next) n[f] = next as AccessName;
-      else delete n[f];
-      return n;
+  const setRowAt = (c: 0 | 1, i: number, next: AccessRow | null) =>
+    setLists((ls) => {
+      const copy: [AccessRow[], AccessRow[]] = [[...ls[0]], [...ls[1]]];
+      const listRows = copy[c].filter((r, j) => j === i || !next || r.facility !== next.facility);
+      const at = listRows.indexOf(copy[c][i]);
+      if (!next) {
+        if (at >= 0) listRows.splice(at, 1);
+      } else if (at >= 0) listRows[at] = next;
+      else listRows.push(next);
+      copy[c] = listRows;
+      return copy;
     });
+  const edit = (c: 0 | 1, i: number) => {
+    const accessItems = [{ id: END_OF_LIST, label: END_OF_LIST }, ...ACCESS_NAMES.map((a) => ({ id: a, label: a }))];
+    nav.push(
+      <SelectList
+        title="Type of Access"
+        heading="Type of Access"
+        items={accessItems}
+        popOnSelect
+        onSelect={(a) => {
+          if (a.id === END_OF_LIST) return setRowAt(c, i, null);
+          const current = lists[c][i]?.facility;
+          nav.push(
+            <SelectList
+              title="List of Facilities"
+              heading="List of Facilities"
+              grouped
+              items={current ? [...facilityItems.filter((f) => f.id === current), ...facilityItems.filter((f) => f.id !== current)] : facilityItems}
+              popOnSelect
+              onSelect={(f) => {
+                const facility = String(f.id);
+                const access = a.id as AccessName;
+                if (!accessNamesFor(facility).includes(access)) return toast(`${access} is not applicable for ${facility}`, 'err');
+                setRowAt(c, i, { access, facility });
+              }}
+            />
+          );
+        }}
+      />
+    );
   };
-  const toggleDisallow = () => {
-    const f = facilities[row];
-    setDisallow((d) => (d.includes(f) ? d.filter((x) => x !== f) : [...d, f]));
-  };
+  const height = (c: 0 | 1) => lists[c].length + 1;
   const tableKeys: Record<string, () => void> = inTable
     ? {
-        ArrowDown: () => setRow((r) => Math.min(r + 1, facilities.length - 1)),
+        ArrowDown: () => setRow((r) => Math.min(r + 1, height(col) - 1)),
         ArrowUp: () => {
           if (row > 0) return setRow(row - 1);
           setInTable(false);
           const inputs = document.querySelectorAll<HTMLInputElement>('input.tb-input');
           inputs[inputs.length - 1]?.focus();
         },
-        PageDown: () => setRow((r) => Math.min(r + 10, facilities.length - 1)),
-        PageUp: () => setRow((r) => Math.max(r - 10, 0)),
-        Enter: toggleDisallow,
-        Space: toggleDisallow,
-        ArrowRight: () => cycleAllow(1),
-        ArrowLeft: () => cycleAllow(-1),
+        ArrowRight: () => (setCol(1), setRow((r) => Math.min(r, height(1) - 1))),
+        ArrowLeft: () => (setCol(0), setRow((r) => Math.min(r, height(0) - 1))),
+        Tab: () => {
+          const c = col === 0 ? 1 : 0;
+          setCol(c);
+          setRow((r) => Math.min(r, height(c) - 1));
+        },
+        Enter: () => edit(col, row),
+        'Alt+D': () => setRowAt(col, row, null),
+        'Ctrl+D': () => setRowAt(col, row, null),
+        Delete: () => setRowAt(col, row, null),
       }
     : {};
   useScreen({
     title: 'Security Levels',
     noPeriod: true,
     keys: { 'Ctrl+A': () => void save(), ...tableKeys },
-    buttons: [{ key: 'Ctrl+A', label: 'Accept', run: () => void save() }],
+    buttons: [
+      { key: 'Ctrl+A', label: 'Accept', run: () => void save() },
+      ...(inTable ? [{ key: 'Alt+D', label: 'Delete Line', run: () => setRowAt(col, row, null) }] : []),
+    ],
   });
   const rows: MiniRow[] = [
-    { key: 'name', label: 'Name of security level', kind: 'static' },
-    { key: 'basis', label: 'Use Basic Facilities of', kind: 'choice', options: [...SECURITY_ROLES] },
-    { key: 'days', label: 'Days allowed for Back Dated vouchers', kind: 'number', heading: ' ' },
-    { key: 'cutoff', label: 'Cut-off date for Back Dated vouchers', kind: 'date' },
+    { key: 'name', label: 'Name of Security Level', kind: 'static' },
+    { key: 'basis', label: 'Use Behaviour as', kind: 'choice', options: [...SECURITY_ROLES] },
+    { key: 'days', label: 'Days allowed for Back Dated Vouchers', kind: 'number', heading: ' ' },
+    { key: 'cutoff', label: 'Cut-off date for Back Dated Vouchers', kind: 'date' },
     { key: 'views', label: 'Allow to save report views for This Company', kind: 'yesno', heading: ' ' },
     { key: 'delviews', label: 'Allow to delete saved views for This Company', kind: 'yesno', indent: true, hidden: !isYes(v.views ?? 'Yes') },
+    { key: 'whatsapp', label: 'Allow to add/modify Registered Business WhatsApp Nos.', kind: 'yesno' },
     { key: 'print', label: 'Set/Alter rules for Print Before Save', kind: 'yesno', note: '(also applicable for Export/E-Mail/Upload)' },
     { key: 'tax', label: 'Allow to override tax details', kind: 'yesno' },
     { key: 'onacc', label: 'Exclude On Account from Bill Allocations', kind: 'yesno' },
     { key: 'newno', label: 'Exclude New Number from Item Allocations', kind: 'yesno', note: '(for tracking/orders)' },
     { key: 'connect', label: 'Allow company to connect', kind: 'yesno' },
     { key: 'tnet', label: 'Use Tally.NET Authentication', kind: 'yesno' },
+    { key: 'idle', label: 'Allow Company to Shut on Idle Time', kind: 'yesno' },
+    { key: 'mins', label: 'Set Time (in mins) for auto lock', kind: 'number', indent: true, hidden: !isYes(v.idle ?? 'No') },
   ];
   if (!level) return null;
-  const start = Math.max(0, Math.min(row - 6, facilities.length - 14));
-  const window = facilities.slice(start, start + 14);
+  const column = (c: 0 | 1) => {
+    const items = lists[c];
+    const all = [...items, null];
+    return (
+      <div>
+        <div className="grid grid-cols-[130px_1fr] border-b border-tb-line text-xs font-bold">
+          <span>Type of Access</span>
+          <span>List of Facilities</span>
+        </div>
+        {all.map((r, i) => {
+          const on = inTable && col === c && row === i;
+          return (
+            <div
+              key={r ? r.facility : 'end'}
+              className={`grid grid-cols-[130px_1fr] leading-[20px] ${on ? 'bg-tb-sel' : ''}`}
+              onClick={() => (setInTable(true), setCol(c), setRow(i))}
+              onDoubleClick={() => edit(c, i)}
+            >
+              {r ? (
+                <>
+                  <b>{r.access}</b>
+                  <span>{r.facility}</span>
+                </>
+              ) : (
+                <span className="col-span-2 italic text-tb-muted">{on ? END_OF_LIST : ''}&nbsp;</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
   return (
     <div className="border border-tb-line bg-tb-paper">
       <div className="flex justify-between bg-tb-strip px-2 py-px text-[13px] font-bold">
@@ -431,11 +523,19 @@ export function SecurityLevelScreen({ name }: { name: string }) {
         <span>{company?.name}</span>
       </div>
       <div className="px-5 py-3">
-        <MiniForm labelWidth={380} rows={rows} values={v} onChange={(k, x) => setV((s) => ({ ...s, [k]: x }))} onDone={() => {
+        <MiniForm
+          labelWidth={420}
+          rows={rows}
+          values={v}
+          onChange={(k, x) => setV((s) => ({ ...s, [k]: x }))}
+          onDone={() => {
             (document.activeElement as HTMLElement | null)?.blur();
             setInTable(true);
-          }} />
-        <div className="mt-3 grid grid-cols-2 border-t border-tb-line pt-2 text-center">
+            setCol(0);
+            setRow(0);
+          }}
+        />
+        <div className="mt-3 grid grid-cols-2 gap-6 border-t border-tb-line pt-2 text-center">
           <div>
             <div className="font-bold underline">Disallow the following Facilities</div>
             <div className="text-xs italic">(others will be allowed)</div>
@@ -445,20 +545,11 @@ export function SecurityLevelScreen({ name }: { name: string }) {
             <div className="text-xs italic">(to re-enable disallowed facilities)</div>
           </div>
         </div>
-        <div className="mt-2 border-t border-tb-line pt-2">
-          {window.map((f, i) => {
-            const on = inTable && start + i === row;
-            return (
-              <div key={f} className={`grid grid-cols-[110px_1fr_140px_1fr] leading-[20px] ${on ? 'bg-tb-sel' : ''}`} onClick={() => (setInTable(true), setRow(start + i))}>
-                <b>{disallow.includes(f) ? 'Full Access' : ''}</b>
-                <span>{f}</span>
-                <b>{allow[f] ?? ''}</b>
-                <span>{allow[f] ? f : ''}</span>
-              </div>
-            );
-          })}
+        <div className="mt-2 grid grid-cols-2 gap-6 border-t border-tb-line pt-2">
+          {column(0)}
+          {column(1)}
         </div>
-        {inTable && <div className="mt-1 text-xs text-tb-muted">Enter or Space: disallow / allow, Left and Right: change access of allowed facility</div>}
+        {inTable && <div className="mt-1 text-xs text-tb-muted">Enter: select Type of Access and Facility, Left/Right: switch list, Alt+D: delete line</div>}
       </div>
     </div>
   );
@@ -471,27 +562,7 @@ export function SecurityControlScreen() {
     const users = await securityUsers(books.db);
     return { levels, users };
   }, []);
-  const roles = useMemo(
-    () =>
-      SECURITY_ROLES.map((role, i) => ({
-        id: -(i + 1),
-        name: role,
-        basis: role as SecurityRole,
-        days_back: 0,
-        cutoff_date: null,
-        save_views: true,
-        delete_views: true,
-        print_rules: false,
-        override_tax: false,
-        exclude_on_account: false,
-        exclude_new_number: false,
-        allow_connect: true,
-        tallynet_auth: false,
-        disallow: [],
-        allow: {},
-      })),
-    []
-  );
+  const roles = useMemo(() => builtinLevels(), []);
   const cols = data && data.levels.length ? data.levels : roles;
   const rows = securityControl(cols);
   const { sel, setSel, keys } = useSel(rows.length);
@@ -655,7 +726,7 @@ export function SelectCompanyScreen({
 }) {
   const entries = sortedCompanyEntries(index);
   const period = (c: CompanyEntry) => (c.fy_start && c.fy_end ? `${fmtDate(c.fy_start)} to ${fmtDate(c.fy_end)}` : '');
-  const items = entries.map((c) => ({ id: c.id, label: companyEntryLabel(c), sub: [`(${c.id})`, period(c)].filter(Boolean).join('\u00a0\u00a0\u00a0') }));
+  const items = entries.map((c) => ({ id: c.id, label: companyEntryLabel(c), sub: [isGroupEntry(c) ? 'Group Company' : '', `(${c.id})`, period(c)].filter(Boolean).join('\u00a0\u00a0\u00a0') }));
   return (
     <SelectList
       title={title}

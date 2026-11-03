@@ -16,6 +16,8 @@ export const STOCK_ITEM_TEXT = ['part_no', 'costing_method', 'market_method', 'd
 export const STOCK_ITEM_INT = ['maintain_batches', 'track_expiry', 'min_order_qty', 'alt_unit_id', 'alt_conversion', 'enable_cost_tracking'] as const;
 
 export const MIGRATIONS: { table: string; column: string; ddl: string }[] = [
+  { table: 'company', column: 'job_work_enabled', ddl: 'ALTER TABLE company ADD COLUMN job_work_enabled INTEGER NOT NULL DEFAULT 0' },
+  { table: 'godowns', column: 'third_party', ddl: 'ALTER TABLE godowns ADD COLUMN third_party INTEGER NOT NULL DEFAULT 0' },
   { table: 'company', column: 'price_levels_enabled', ddl: 'ALTER TABLE company ADD COLUMN price_levels_enabled INTEGER NOT NULL DEFAULT 0' },
   { table: 'company', column: 'batches_enabled', ddl: 'ALTER TABLE company ADD COLUMN batches_enabled INTEGER NOT NULL DEFAULT 0' },
   { table: 'stock_movements', column: 'tracked', ddl: 'ALTER TABLE stock_movements ADD COLUMN tracked INTEGER NOT NULL DEFAULT 0' },
@@ -32,8 +34,10 @@ export const MIGRATIONS: { table: string; column: string; ddl: string }[] = [
   ...LEDGER_INT_FIELDS.map((c) => ({ table: 'ledgers', column: c, ddl: `ALTER TABLE ledgers ADD COLUMN ${c} INTEGER NOT NULL DEFAULT 0` })),
 ];
 
-export const STOCK_VOUCHER_TYPES = ['Delivery Note', 'Receipt Note', 'Stock Journal', 'Physical Stock', 'Sales Order', 'Purchase Order', 'Rejection In', 'Rejection Out'] as const;
+export const JOB_WORK_TYPES = ['Job Work Out Order', 'Job Work In Order', 'Material Out', 'Material In'] as const;
+export const STOCK_VOUCHER_TYPES = ['Delivery Note', 'Receipt Note', 'Stock Journal', 'Physical Stock', 'Sales Order', 'Purchase Order', 'Rejection In', 'Rejection Out', ...JOB_WORK_TYPES] as const;
 export const ORDER_VOUCHER_TYPES = ['Sales Order', 'Purchase Order'] as const;
+export const ORDER_PARENTS_SQL = "('Sales Order', 'Purchase Order', 'Job Work Out Order', 'Job Work In Order')";
 
 export const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS company (

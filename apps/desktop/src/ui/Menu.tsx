@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { KeyHandler } from '../registry.ts';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { canAllCurrent, currentUser, menuActions, onUserChange } from '@tallybook/core';
+import { showAccessDenied, type KeyHandler } from '../registry.ts';
 
 export interface MenuItem {
   label: string;
@@ -8,6 +9,24 @@ export interface MenuItem {
   hotkey?: string;
   hint?: string;
   hotAt?: number;
+  facility?: string | false;
+}
+
+const deniedItems = new WeakSet<MenuItem>();
+
+export function menuItemDenied(menuTitle: string, it: MenuItem): boolean {
+  if (it.heading || it.label === '' || it.facility === false) return false;
+  return !canAllCurrent(it.facility ? [it.facility as `${string}.display`] : menuActions(menuTitle, it.label));
+}
+
+function activate(it: MenuItem | undefined) {
+  if (!it) return;
+  if (deniedItems.has(it)) return showAccessDenied();
+  it.run?.();
+}
+
+function useSecurityUser() {
+  return useSyncExternalStore(onUserChange, currentUser);
 }
 
 export function useMenu(items: MenuItem[]) {
@@ -36,7 +55,7 @@ export function useMenu(items: MenuItem[]) {
         const its = ref.current.items;
         for (let i = its.length - 1; i >= 0; i--) if (!skip(its[i])) return setSel(i);
       },
-      Enter: () => ref.current.items[ref.current.sel]?.run?.(),
+      Enter: () => activate(ref.current.items[ref.current.sel]),
     };
     for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
       k[letter] = () => {
@@ -44,14 +63,14 @@ export function useMenu(items: MenuItem[]) {
         const marked = its.findIndex((i) => i.hotkey === letter);
         if (marked >= 0) {
           setSel(marked);
-          its[marked].run?.();
+          activate(its[marked]);
           return;
         }
         const matches = its.map((it, idx) => ({ it, idx })).filter(({ it }) => !skip(it) && !it.hotkey && it.label.toUpperCase().startsWith(letter));
         if (!matches.length) return false;
         const after = matches.find((m) => m.idx > ref.current.sel) ?? matches[0];
         setSel(after.idx);
-        if (matches.length === 1) after.it.run?.();
+        if (matches.length === 1) activate(after.it);
       };
     }
     return k;
@@ -64,20 +83,25 @@ export function useMenu(items: MenuItem[]) {
   return { sel, setSel, keys };
 }
 
-function Label({ it }: { it: MenuItem }) {
+function Label({ it, dim }: { it: MenuItem; dim?: boolean }) {
   if (!it.hotkey) return <>{it.label}</>;
   const at = it.hotAt ?? it.label.toUpperCase().indexOf(it.hotkey);
   if (at < 0) return <>{it.label}</>;
   return (
     <>
       {it.label.slice(0, at)}
-      <b className="text-tb-top">{it.label[at]}</b>
+      <b className={dim ? '' : 'text-tb-top'}>{it.label[at]}</b>
       {it.label.slice(at + 1)}
     </>
   );
 }
 
 export function MenuCard({ title, items, sel, setSel, width = 332 }: { title: string; items: MenuItem[]; sel: number; setSel: (i: number) => void; width?: number }) {
+  useSecurityUser();
+  for (const it of items) {
+    if (menuItemDenied(title, it)) deniedItems.add(it);
+    else deniedItems.delete(it);
+  }
   return (
     <div className="border border-tb-line bg-tb-menu shadow-[1px_1px_4px_rgba(0,0,0,.2)]" style={{ width }}>
       <h3 className="m-0 bg-tb-top py-1 pl-24 text-[15px] font-normal text-white">{title}</h3>
@@ -96,11 +120,11 @@ export function MenuCard({ title, items, sel, setSel, width = 332 }: { title: st
                 if (el && i === sel) el.scrollIntoView({ block: 'nearest' });
               }}
               onMouseEnter={() => setSel(i)}
-              onClick={() => it.run?.()}
-              className={`flex cursor-pointer justify-between py-px pl-24 pr-4 text-[15px] ${i === sel ? 'bg-tb-sel' : ''}`}
+              onClick={() => activate(it)}
+              className={`flex cursor-pointer justify-between py-px pl-24 pr-4 text-[15px] ${i === sel ? 'bg-tb-sel' : ''} ${deniedItems.has(it) ? 'text-[#a7b0b8]' : ''}`}
             >
               <span>
-                <Label it={it} />
+                <Label it={it} dim={deniedItems.has(it)} />
               </span>
               {it.hint ? <span className="ml-6 text-xs opacity-70">{it.hint}</span> : null}
             </li>
