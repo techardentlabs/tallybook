@@ -73,7 +73,7 @@ The Release workflow signs and notarises the Mac build automatically once these 
 | `APPLE_API_KEY` | Key ID of an API key with the Developer role |
 | `APPLE_API_PRIVATE_KEY` | Contents of the downloaded `AuthKey_<KEYID>.p8` |
 
-Enrol as an Organisation (Techardent Internet Private Limited, needs a D-U-N-S number) so the certificate shows the company name, not a person's.
+Enrol as an Organisation (Techardent Internet Private Limited, needs a D-U-N-S number) so the certificate shows the company name, not a person's. The Apple Developer and App Store Connect account uses `developer@techardentlabs.com`. Don't use an `@tallybook.online` address: that domain has no MX records, so it can't receive verification emails.
 
 Windows signing is not set up yet; Azure Trusted Signing or an OV/EV certificate removes the SmartScreen warning.
 

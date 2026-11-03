@@ -33,9 +33,17 @@ On macOS, function keys may need the `fn` key unless "Use F1, F2 etc. keys as st
 
 ## Status
 
-Working and tested: company, groups, ledgers (with GST and bank details), voucher types and numbering, eight accounting voucher types, bill-by-bill (New Ref, Agst Ref, Advance, On Account), GST invoices (CGST/SGST/IGST), Day Book, Trial Balance, P&L, Balance Sheet, ledger vouchers, outstandings, GSTR-1 and GSTR-3B summaries (GSTR-1 JSON export), Tally XML import (dry run, idempotent) and export.
+Built and tested: accounting vouchers with bill-wise, cost centres and post-dated vouchers; inventory with godowns, batches, price levels and five costing methods; manufacturing; GST invoices, GSTR-1, GSTR-3B, GSTR-2B reconciliation and e-invoice/e-way bill JSON for offline upload; TDS/TCS under the Income-tax Act 2025; payroll; banking and reconciliation; multiple companies with TallyVault encryption; Tally XML import (dry run, idempotent) and export; Excel/CSV import.
 
-Not built yet: inventory and item invoices, e-invoice and e-way bill, TDS/TCS, payroll, bank reconciliation, multi-user, cloud, printing. The XML tag names come from Tally's public docs and memory and must be validated against real exports.
+Not built yet: multi-user over a network, direct GST filing, IRN and e-way bill generation, connected banking. `GAPS.md` has the full list. The XML tag names must still be validated against more real TallyPrime exports.
+
+## Contributing
+
+Issues and pull requests are welcome on [GitHub](https://github.com/techardentlabs/tallybook). Run `pnpm test` before opening a pull request, and add a test in `packages/core/test` for any accounting change.
+
+## License
+
+TallyBook is free software, licensed under the [GNU General Public License v3.0](LICENSE). You can use, study, change and share it. If you distribute a modified version, you must publish its source under the same license.
 
 ## Disclaimer
 
