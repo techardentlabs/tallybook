@@ -245,6 +245,7 @@ export interface ItemLine {
   rate: number;
   discount_bp?: number;
   rate_bp?: number;
+  tracked?: boolean;
 }
 
 export interface ItemInvoicePlan extends GstInvoicePlan {
@@ -272,7 +273,7 @@ export async function planItemInvoice(
     const amount = lineAmount(l.qty, l.rate, l.discount_bp ?? 0);
     if (amount <= 0) throw new CoreError('invalid', `Amount for ${item.name} must be positive`);
     supply.push({ ledger_id: l.ledger_id, taxable: amount, rate_bp: l.rate_bp ?? item.rate_bp });
-    stock.push({ item_id: l.item_id, godown_id: l.godown_id ?? 1, ledger_id: l.ledger_id, qty: out ? -l.qty : l.qty, rate: l.rate, amount, discount_bp: l.discount_bp ?? 0 });
+    stock.push({ item_id: l.item_id, godown_id: l.godown_id ?? 1, ledger_id: l.ledger_id, qty: out ? -l.qty : l.qty, rate: l.rate, amount, discount_bp: l.discount_bp ?? 0, tracked: l.tracked ? 1 : 0 });
   }
   const plan = await planGstInvoice(books, kind, partyId, supply, opts);
   return { ...plan, stock };
@@ -306,7 +307,7 @@ export async function stockSummary(db: Db, from: string, to: string): Promise<{ 
   const items = await stockItems(db);
   const moves = await db.select<Move>(
     `SELECT m.item_id, v.date, m.qty, m.amount, t.parent FROM stock_movements m JOIN vouchers v ON v.id = m.voucher_id JOIN voucher_types t ON t.id = v.type_id
-     WHERE v.cancelled = 0 AND v.date <= ? AND t.parent NOT IN ('Sales Order', 'Purchase Order') ORDER BY v.date, v.id, m.seq`,
+     WHERE v.cancelled = 0 AND m.tracked = 0 AND v.date <= ? AND t.parent NOT IN ('Sales Order', 'Purchase Order') ORDER BY v.date, v.id, m.seq`,
     [to]
   );
   const byItem = new Map<number, Move[]>();
@@ -431,7 +432,7 @@ export async function stockItemVouchers(db: Db, itemId: number, from: string, to
   const all = await db.select<StockMovementRow & { parent: string }>(
     `SELECT v.id AS voucher_id, v.date, t.name AS type, t.parent AS parent, v.number, COALESCE(p.name, '') AS party, m.qty, m.rate, m.amount
      FROM stock_movements m JOIN vouchers v ON v.id = m.voucher_id JOIN voucher_types t ON t.id = v.type_id LEFT JOIN ledgers p ON p.id = v.party_id
-     WHERE m.item_id = ? AND v.cancelled = 0 AND v.date <= ? AND t.parent NOT IN ('Sales Order', 'Purchase Order') ORDER BY v.date, v.id, m.seq`,
+     WHERE m.item_id = ? AND v.cancelled = 0 AND m.tracked = 0 AND v.date <= ? AND t.parent NOT IN ('Sales Order', 'Purchase Order') ORDER BY v.date, v.id, m.seq`,
     [itemId, to]
   );
   let running = it.opening_qty;

@@ -1,4 +1,4 @@
-import { auditLog, createBackup, restoreBackup, fmtDate, type AuditRow } from '@tallybook/core';
+import { auditLog, backupNeedsPassword, createBackup, createVaultBackup, restoreBackup, fmtDate, type AuditRow } from '@tallybook/core';
 import { MenuCard, useMenu, type MenuItem } from '../ui/Menu.tsx';
 import { useScreen } from '../registry.ts';
 import { useStore } from '../store.tsx';
@@ -7,7 +7,9 @@ import { useDialogs } from '../ui/Dialogs.tsx';
 import { pickJsonFile, saveTextFile } from '../files.ts';
 import { Frame, th, useLoad, useSel } from './Reports.tsx';
 import { useFilter } from './reportConfig.tsx';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import { vault } from '../db/index.ts';
+import { VaultPasswordPanel } from './Login.tsx';
 
 export function EditLogReport() {
   const { books } = useStore();
@@ -47,27 +49,70 @@ export function EditLogReport() {
   );
 }
 
+interface Ask {
+  title: string;
+  message: string;
+  submit: (password: string) => Promise<void>;
+}
+
 export function DataMenu() {
   const { books, company, reloadCompany, bump, toast } = useStore();
   const nav = useNav();
   const dialogs = useDialogs();
+  const [ask, setAsk] = useState<Ask | null>(null);
 
-  const backup = async () => {
-    const file = await createBackup(books.db);
+  const save = async (text: string) => {
     const stamp = new Date().toISOString().slice(0, 10);
-    const ok = await saveTextFile(`${company?.name ?? 'company'} ${stamp}.tbbackup.json`, JSON.stringify(file), 'application/json');
+    const ok = await saveTextFile(`${company?.name ?? 'company'} ${stamp}.tbbackup.json`, text, 'application/json');
     if (ok) toast('Backup saved', 'ok');
+  };
+  const backup = async () => {
+    try {
+      if (!vault().encrypted()) return await save(JSON.stringify(await createBackup(books.db)));
+      setAsk({
+        title: 'Backup',
+        message: 'This company is protected by TallyVault. The backup will be encrypted with the TallyVault password.',
+        submit: async (pw) => {
+          if (!(await vault().verify(pw))) throw new Error('Incorrect TallyVault password');
+          const file = await createVaultBackup(books.db, pw);
+          setAsk(null);
+          await save(JSON.stringify(file)).catch((e: Error) => toast(e.message, 'err'));
+        },
+      });
+    } catch (e) {
+      toast((e as Error).message, 'err');
+    }
+  };
+  const apply = async (data: unknown, password?: string) => {
+    const r = await restoreBackup(books.db, data, password);
+    await reloadCompany();
+    bump();
+    toast(`Restored ${r.rows} records`, 'ok');
+    nav.pop();
   };
   const restore = async () => {
     const f = await pickJsonFile();
     if (!f) return;
-    if (!(await dialogs.confirm('Restoring replaces ALL data in this company with the backup. Continue?', { title: 'Restore', def: false }))) return;
+    let data: unknown;
     try {
-      const r = await restoreBackup(books.db, JSON.parse(f.text));
-      await reloadCompany();
-      bump();
-      toast(`Restored ${r.rows} records`, 'ok');
-      nav.pop();
+      data = JSON.parse(f.text);
+    } catch {
+      return toast('This is not a TallyBook backup file', 'err');
+    }
+    if (!(await dialogs.confirm('Restoring replaces ALL data in this company with the backup. Continue?', { title: 'Restore', def: false }))) return;
+    if (backupNeedsPassword(data)) {
+      setAsk({
+        title: 'Restore',
+        message: 'This backup is encrypted with TallyVault. Enter the TallyVault password of the company it was taken from.',
+        submit: async (pw) => {
+          await apply(data, pw);
+          setAsk(null);
+        },
+      });
+      return;
+    }
+    try {
+      await apply(data);
     } catch (e) {
       toast((e as Error).message, 'err');
     }
@@ -82,5 +127,10 @@ export function DataMenu() {
   ];
   const { sel, setSel, keys } = useMenu(items);
   useScreen({ title: 'Data', noPeriod: true, keys, buttons: [] });
-  return <MenuCard title="Data" items={items} sel={sel} setSel={setSel} />;
+  return (
+    <>
+      <MenuCard title="Data" items={items} sel={sel} setSel={setSel} />
+      {ask && <VaultPasswordPanel title={ask.title} message={ask.message} submit={ask.submit} onCancel={() => setAsk(null)} />}
+    </>
+  );
 }

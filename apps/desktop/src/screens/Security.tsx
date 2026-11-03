@@ -21,9 +21,7 @@ import {
   securityLevel,
   securityLevels,
   securityUsers,
-  setVaultPassword,
   sortedCompanyRefs,
-  vaultEnabled,
   type AccessName,
   type CompanyList,
   type CompanyRef,
@@ -36,6 +34,7 @@ import { useNav } from '../nav.tsx';
 import { useDialogs } from '../ui/Dialogs.tsx';
 import { Frame, th, rowCls, useLoad, useSel } from './Reports.tsx';
 import { MiniForm, useSecurity, type MiniRow, type MiniValues } from './Login.tsx';
+import { vault } from '../db/index.ts';
 
 const yn = (b: boolean) => (b ? 'Yes' : 'No');
 const isYes = (s: string) => s === 'Yes';
@@ -53,45 +52,84 @@ function Titled({ title, children, width = 640 }: { title: string; children: Rea
   );
 }
 
+const VAULT_WARNING = 'There is no way to recover a lost TallyVault password. If it is forgotten, the company data and its encrypted backups cannot be opened by anyone.';
+
 export function CompanySecurityScreen() {
   const { books, bump, toast, company } = useStore();
   const nav = useNav();
   const sec = useSecurity();
   const dialogs = useDialogs();
   const enabled = useLoad(() => securityEnabled(books.db), []);
-  const vault = useLoad(() => vaultEnabled(books.db), []);
-  const [v, setV] = useState<MiniValues>({ use: 'No', admin: '', password: '', repeat: '', vault: '', vaultRepeat: '' });
+  const [encrypted, setEncrypted] = useState(() => vault().encrypted());
+  const [v, setV] = useState<MiniValues>({ use: 'No', admin: '', password: '', repeat: '', vaultCurrent: '', vaultRemove: 'No', vault: '', vaultRepeat: '' });
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (enabled !== null) setV((s) => ({ ...s, use: yn(enabled) }));
   }, [enabled]);
+  const removing = encrypted && isYes(v.vaultRemove);
   const rows: MiniRow[] = [
     { key: 'use', label: 'Use Security Control', kind: 'yesno' },
     { key: 'admin', label: 'Name of Administrator', kind: 'text', hidden: !isYes(v.use) || !!enabled },
     { key: 'password', label: 'Password', kind: 'password', hidden: !isYes(v.use) || !!enabled },
     { key: 'repeat', label: 'Repeat Password', kind: 'password', hidden: !isYes(v.use) || !!enabled },
-    { key: 'vault', label: 'TallyVault password (asked before this company opens)', kind: 'password', heading: 'TallyVault' },
-    { key: 'vaultRepeat', label: 'Confirm Password', kind: 'password' },
+    ...(encrypted
+      ? ([
+          { key: 'vaultCurrent', label: 'Current TallyVault password', kind: 'password', heading: 'TallyVault' },
+          { key: 'vaultRemove', label: 'Remove TallyVault encryption', kind: 'yesno' },
+          { key: 'vault', label: 'New TallyVault password', kind: 'password', hidden: removing },
+          { key: 'vaultRepeat', label: 'Confirm Password', kind: 'password', hidden: removing },
+        ] satisfies MiniRow[])
+      : ([
+          { key: 'vault', label: 'Set TallyVault password to encrypt company data', kind: 'password', heading: 'TallyVault' },
+          { key: 'vaultRepeat', label: 'Confirm Password', kind: 'password' },
+        ] satisfies MiniRow[])),
   ];
+  const vaultPlan = async (): Promise<{ current: string; next: string } | null> => {
+    const wantsNew = !removing && !!(v.vault || v.vaultRepeat);
+    if (!removing && !wantsNew) return null;
+    if (wantsNew) {
+      if (!v.vault) throw new Error('Enter the new TallyVault password');
+      if (v.vault !== v.vaultRepeat) throw new Error('TallyVault passwords do not match');
+    }
+    if (encrypted) {
+      if (!v.vaultCurrent) throw new Error('Enter the current TallyVault password');
+      if (!(await vault().verify(v.vaultCurrent))) throw new Error('Incorrect current TallyVault password');
+    }
+    const ok = removing
+      ? await dialogs.confirm('Remove TallyVault encryption? The company data will be stored without encryption.', { title: 'TallyVault', def: false })
+      : await dialogs.confirm(`${VAULT_WARNING} Encrypt the company data with this password?`, { title: 'TallyVault', def: false });
+    if (!ok) return null;
+    return { current: encrypted ? v.vaultCurrent : '', next: removing ? '' : v.vault };
+  };
   const save = async () => {
+    if (busy) return;
+    setBusy(true);
     try {
-      if (isYes(v.use) && !enabled) {
-        if (v.password !== v.repeat) throw new Error('Passwords do not match');
-        await enableSecurity(books.db, { username: v.admin, password: v.password });
-      } else if (!isYes(v.use) && enabled) {
-        if (!(await dialogs.confirm('Disable security control and remove all users?', { title: 'Security', def: false }))) return;
+      const plan = await vaultPlan();
+      if (!plan && (removing || v.vault || v.vaultRepeat)) return;
+      const enabling = isYes(v.use) && !enabled;
+      const disabling = !isYes(v.use) && !!enabled;
+      if (enabling && v.password !== v.repeat) throw new Error('Passwords do not match');
+      if (disabling && !(await dialogs.confirm('Disable security control and remove all users?', { title: 'Security', def: false }))) return;
+      if (plan) {
+        await vault().change(plan.current, plan.next);
+        setEncrypted(vault().encrypted());
+        setV((s) => ({ ...s, vaultCurrent: '', vaultRemove: 'No', vault: '', vaultRepeat: '' }));
+        toast(plan.next ? (encrypted ? 'TallyVault password changed' : 'Company data encrypted with TallyVault') : 'TallyVault encryption removed', 'ok');
+      }
+      if (enabling) await enableSecurity(books.db, { username: v.admin, password: v.password });
+      else if (disabling) {
         await disableSecurity(books.db, sec.user);
         sec.setUser(null);
       }
-      if (v.vault || v.vaultRepeat) {
-        if (v.vault !== v.vaultRepeat) throw new Error('TallyVault passwords do not match');
-        await setVaultPassword(books.db, v.vault);
-      }
+      if (!plan) toast('Security settings saved', 'ok');
       await sec.refresh();
       bump();
-      toast('Security settings saved', 'ok');
       nav.pop();
     } catch (e) {
       toast((e as Error).message, 'err');
+    } finally {
+      setBusy(false);
     }
   };
   useScreen({
@@ -100,11 +138,17 @@ export function CompanySecurityScreen() {
     keys: { 'Ctrl+A': () => void save() },
     buttons: [{ key: 'Ctrl+A', label: 'Accept', run: () => void save() }],
   });
-  if (enabled === null || vault === null) return null;
+  if (enabled === null) return null;
   return (
     <Titled title={`Company Security${company ? ' - ' + company.name : ''}`}>
       <MiniForm labelWidth={340} rows={rows} values={v} onChange={(k, x) => setV((s) => ({ ...s, [k]: x }))} onDone={() => void save()} />
-      {vault && <div className="mt-3 text-xs italic text-tb-muted">A TallyVault password is already set. Leave blank to keep it.</div>}
+      {encrypted ? (
+        <div className="mt-3 text-xs italic text-tb-muted">Company data is encrypted with TallyVault. Enter the current password to change or remove it, or leave the TallyVault fields blank to keep it.</div>
+      ) : (
+        <div className="mt-3 text-xs italic text-tb-muted">Leave blank to keep the company data unencrypted.</div>
+      )}
+      <div className="mt-2 text-xs font-bold text-tb-danger">{VAULT_WARNING}</div>
+      {busy && <div className="mt-2 text-tb-muted">Working...</div>}
     </Titled>
   );
 }

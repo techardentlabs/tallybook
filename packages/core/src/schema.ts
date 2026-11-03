@@ -16,6 +16,7 @@ export const STOCK_ITEM_TEXT = ['part_no', 'costing_method', 'market_method', 'd
 export const STOCK_ITEM_INT = ['maintain_batches', 'track_expiry', 'min_order_qty', 'alt_unit_id', 'alt_conversion', 'enable_cost_tracking'] as const;
 
 export const MIGRATIONS: { table: string; column: string; ddl: string }[] = [
+  { table: 'stock_movements', column: 'tracked', ddl: 'ALTER TABLE stock_movements ADD COLUMN tracked INTEGER NOT NULL DEFAULT 0' },
   { table: 'audit_log', column: 'username', ddl: "ALTER TABLE audit_log ADD COLUMN username TEXT NOT NULL DEFAULT ''" },
   { table: 'company', column: 'cost_centres_enabled', ddl: 'ALTER TABLE company ADD COLUMN cost_centres_enabled INTEGER NOT NULL DEFAULT 0' },
   { table: 'company', column: 'payroll_enabled', ddl: 'ALTER TABLE company ADD COLUMN payroll_enabled INTEGER NOT NULL DEFAULT 0' },

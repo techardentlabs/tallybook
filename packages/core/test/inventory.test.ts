@@ -275,3 +275,24 @@ test('trial balance includes opening stock so it agrees with the balance sheet',
   const det = await groupSummaryDetailed(books.db, '2026-04-01', '2027-03-31', null);
   assert.ok(det.rows.some((r) => r.name === 'Opening Stock' && r.opening === 1000_00));
 });
+
+test('invoice against a delivery note does not reduce stock twice and clears the note', async () => {
+  const { books, ty, sales, cust } = await setup();
+  const { ensureStockVoucherTypes, ensureStockExtras, pendingDocs, trackAgainst } = await import('../src/index.ts');
+  await ensureStockVoucherTypes(books.db);
+  await ensureStockExtras(books.db);
+  const types = await books.voucherTypes();
+  const dn = types.find((t) => t.name === 'Delivery Note')!.id;
+  const item = await createStockItem(books.db, { name: 'Valve', opening_qty: 100_000, opening_value: 1000_00 });
+  const note = await books.createVoucher({ type_id: dn, date: '2026-06-01', party_id: cust, entries: [], stock: [{ item_id: item.id, qty: -10_000, rate: 50_00, amount: 500_00 }] });
+  let docs = await pendingDocs(books.db, 'Sales', 'invoice', cust, '2026-06-30');
+  assert.equal(docs.length, 1);
+  assert.equal(docs[0].tracks_stock, true);
+  assert.equal(docs[0].lines[0].balance, 10_000);
+  const inv = await createItemInvoice(books, { kind: 'Sales', type_id: ty.get('Sales')!, date: '2026-06-05', party_id: cust, lines: [{ item_id: item.id, ledger_id: sales, qty: 10_000, rate: 50_00, tracked: true }] });
+  await trackAgainst(books.db, inv.stock[0].id, note.stock[0].id, 10_000);
+  const row = (await stockSummary(books.db, '2026-04-01', '2027-03-31')).rows[0];
+  assert.equal(row.closing_qty, 90_000);
+  docs = await pendingDocs(books.db, 'Sales', 'invoice', cust, '2026-06-30');
+  assert.equal(docs.length, 0);
+});

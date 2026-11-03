@@ -1,4 +1,7 @@
 import { CoreError, type Db, type SqlValue, type Stmt } from './db.ts';
+import { decryptBackup, encryptBackup, isEncryptedBackup, type EncryptedBackupFile } from './vault.ts';
+
+export * from './vault.ts';
 
 export const BACKUP_TABLES = [
   'company',
@@ -37,7 +40,19 @@ export async function createBackup(db: Db): Promise<BackupFile> {
   return { format: 'tallybook-backup', version: 1, created: new Date().toISOString(), tables };
 }
 
-export async function restoreBackup(db: Db, file: unknown): Promise<{ rows: number }> {
+export async function createVaultBackup(db: Db, password: string): Promise<EncryptedBackupFile> {
+  return encryptBackup(await createBackup(db), password);
+}
+
+export function backupNeedsPassword(file: unknown): boolean {
+  return isEncryptedBackup(file);
+}
+
+export async function restoreBackup(db: Db, file: unknown, password?: string): Promise<{ rows: number }> {
+  if (isEncryptedBackup(file)) {
+    if (!password) throw new CoreError('invalid', 'This backup is protected by a TallyVault password');
+    file = await decryptBackup(file, password);
+  }
   const f = file as BackupFile;
   if (!f || f.format !== 'tallybook-backup' || f.version !== 1 || typeof f.tables !== 'object') throw new CoreError('invalid', 'This is not a TallyBook backup file');
   if (!f.tables.company?.length) throw new CoreError('invalid', 'The backup has no company data');

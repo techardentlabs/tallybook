@@ -26,6 +26,7 @@ export interface BuiltVoucher {
   place_of_supply?: string;
   reverse_charge?: boolean;
   stock?: StockLineInput[];
+  track?: { index: number; against: number; qty: number }[];
 }
 
 export interface BodyHandle {
@@ -53,7 +54,7 @@ export interface InitialData {
   place_of_supply?: string;
   reverse_charge?: boolean;
   lines?: { ledgerId: number; taxable: number; rate_bp: number }[];
-  items?: { item_id: number; godown_id: number | null; ledgerId: number | null; qty: number; rate: number }[];
+  items?: { item_id: number; godown_id: number | null; ledgerId: number | null; qty: number; rate: number; tracked?: number }[];
 }
 
 interface Row {

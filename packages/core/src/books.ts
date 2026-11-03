@@ -155,6 +155,7 @@ export interface StockLineInput {
   rate: number;
   amount: number;
   discount_bp?: number;
+  tracked?: number;
 }
 
 export interface VoucherRow {
@@ -537,7 +538,7 @@ export class Books {
       [id]
     );
     const stock = await this.db.select<StockLineInput & { id: number; item: string }>(
-      'SELECT m.id, m.item_id, i.name AS item, m.godown_id, m.ledger_id, m.qty, m.rate, m.amount, m.discount_bp FROM stock_movements m JOIN stock_items i ON i.id = m.item_id WHERE m.voucher_id = ? ORDER BY m.seq',
+      'SELECT m.id, m.item_id, i.name AS item, m.godown_id, m.ledger_id, m.qty, m.rate, m.amount, m.discount_bp, m.tracked FROM stock_movements m JOIN stock_items i ON i.id = m.item_id WHERE m.voucher_id = ? ORDER BY m.seq',
       [id]
     );
     return {
@@ -619,8 +620,8 @@ export class Books {
     if (!lines?.length) return [];
     let next = ((await one<{ m: number }>(this.db, 'SELECT COALESCE(MAX(id), 0) AS m FROM stock_movements'))!.m) + 1;
     return lines.map((l, i) => ({
-      sql: 'INSERT INTO stock_movements (id, voucher_id, item_id, godown_id, ledger_id, qty, rate, amount, discount_bp, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      params: [next++, voucherId, l.item_id, l.godown_id ?? null, l.ledger_id ?? null, l.qty, l.rate, l.amount, l.discount_bp ?? 0, i],
+      sql: 'INSERT INTO stock_movements (id, voucher_id, item_id, godown_id, ledger_id, qty, rate, amount, discount_bp, seq, tracked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      params: [next++, voucherId, l.item_id, l.godown_id ?? null, l.ledger_id ?? null, l.qty, l.rate, l.amount, l.discount_bp ?? 0, i, l.tracked ? 1 : 0],
     }));
   }
 

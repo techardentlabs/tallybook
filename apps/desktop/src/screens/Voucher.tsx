@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { canCurrent, ensureDutyLedger, recordDeduction, saveEntryAllocations, type AllocationInput, type TdsPlan, bankAlloc, bankConfig, ensureBanking, saveBankAlloc, tdsCompany, STOCK_VOUCHER_TYPES, fmtDate, parseDate, weekday, todayIso, type BillInput, type Group, type Ledger, type VoucherRow, type VoucherType } from '@tallybook/core';
+import { clearTracking, trackAgainst, canCurrent, ensureDutyLedger, recordDeduction, saveEntryAllocations, type AllocationInput, type TdsPlan, bankAlloc, bankConfig, ensureBanking, saveBankAlloc, tdsCompany, STOCK_VOUCHER_TYPES, fmtDate, parseDate, weekday, todayIso, type BillInput, type Group, type Ledger, type VoucherRow, type VoucherType } from '@tallybook/core';
 import { useScreen } from '../registry.ts';
 import { useStore } from '../store.tsx';
 import { useNav } from '../nav.tsx';
@@ -45,7 +45,7 @@ function toInitial(v: VoucherRow, ledgers: Ledger[], groups: Group[], invoice: b
     return {
       party_id: v.party_id,
       place_of_supply: v.place_of_supply,
-      items: v.stock.map((m) => ({ item_id: m.item_id, godown_id: m.godown_id ?? null, ledgerId: m.ledger_id ?? null, qty: m.qty, rate: m.rate })),
+      items: v.stock.map((m) => ({ item_id: m.item_id, godown_id: m.godown_id ?? null, ledgerId: m.ledger_id ?? null, qty: m.qty, rate: m.rate, tracked: m.tracked })),
     };
   }
   if (!invoice) {
@@ -319,7 +319,13 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
         entries,
       };
       if (editing && source) {
+        const oldIds = source.stock.map((m) => m.id);
+        const oldTrack = oldIds.length ? await books.db.select<{ movement_id: number; against_id: number; qty: number }>(`SELECT movement_id, against_id, qty FROM stockx_track WHERE movement_id IN (${oldIds.map(() => '?').join(', ')})`, oldIds) : [];
+        for (const id of oldIds) await clearTracking(books.db, id);
         await books.updateVoucher(source.id, payload);
+        const fresh = await books.voucher(source.id);
+        const links = built.track?.length ? built.track : oldTrack.map((t) => ({ index: oldIds.indexOf(t.movement_id), against: t.against_id, qty: t.qty }));
+        for (const t of links) if (fresh?.stock[t.index]) await trackAgainst(books.db, fresh.stock[t.index].id, t.against, t.qty);
         if (bank) await saveAlloc(source.id, bank);
         lastDate = iso;
         bump();
@@ -327,6 +333,7 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
         nav.pop();
       } else {
         const v = await books.createVoucher(payload);
+        for (const t of built.track ?? []) if (v.stock[t.index]) await trackAgainst(books.db, v.stock[t.index].id, t.against, t.qty);
         if (tdsPlan) await recordDeduction(books.db, v.id, tdsPlan.partyId, iso, tdsPlan.plan);
         for (const [idx, lines] of costLines) {
           const row = v.entries[idx];

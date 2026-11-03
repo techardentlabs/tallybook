@@ -718,16 +718,6 @@ export async function changePassword(
   return (await loadUser(db, 'id = ?', [row.id]))!;
 }
 
-export async function setVaultPassword(db: Db, password: string, current?: string): Promise<void> {
-  const stored = await setting(db, 'vault');
-  if (stored && !(await verifyPassword(current ?? '', stored))) throw new CoreError('invalid', 'Incorrect TallyVault password');
-  if (!password) {
-    await db.batch([{ sql: "DELETE FROM security_settings WHERE key = 'vault'" }]);
-    return;
-  }
-  await db.batch([putSetting('vault', await hashPassword(password))]);
-}
-
 export async function vaultEnabled(db: Db): Promise<boolean> {
   return (await setting(db, 'vault')) !== null;
 }
@@ -735,6 +725,10 @@ export async function vaultEnabled(db: Db): Promise<boolean> {
 export async function unlockVault(db: Db, password: string): Promise<boolean> {
   const stored = await setting(db, 'vault');
   return stored === null ? true : verifyPassword(password, stored);
+}
+
+export async function clearLegacyVault(db: Db): Promise<void> {
+  await db.batch([{ sql: "DELETE FROM security_settings WHERE key = 'vault'" }]);
 }
 
 export interface EditLogEntry {

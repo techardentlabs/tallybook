@@ -4,7 +4,7 @@ import { nodeDb } from '../src/node-adapter.ts';
 import {
   addCompanyRef, can, canEnterOn, changePassword, checkPasswordPolicy, editLog, editLogByUser, emptyCompanyList, enableSecurity, ensureSecurity, hashPassword,
   login, logEdit, passwordPolicy, removeUser, savePasswordPolicy, saveSecurityLevel, saveUser, securityControl, securityEnabled, securityLevels, securityUsers,
-  selectCompanyRef, setCurrentUser, currentUser, canCurrent, setVaultPassword, unlockVault, vaultEnabled, verifyPassword, DEFAULT_POLICY, builtinLevels,
+  selectCompanyRef, setCurrentUser, currentUser, canCurrent, clearLegacyVault, unlockVault, vaultEnabled, verifyPassword, DEFAULT_POLICY, builtinLevels,
 } from '../src/security.ts';
 
 async function setup() {
@@ -168,18 +168,15 @@ test('security control matrix lists role access per facility', () => {
   assert.equal(bs.access['Data Entry'], 'None');
 });
 
-test('tallyvault password protects company', async () => {
+test('legacy tallyvault hash is checked and can be cleared', async () => {
   const db = await setup();
   assert.equal(await vaultEnabled(db), false);
   assert.ok(await unlockVault(db, ''));
-  await setVaultPassword(db, 'vault1');
+  await db.batch([{ sql: "INSERT INTO security_settings (key, value) VALUES ('vault', ?)", params: [await hashPassword('vault1')] }]);
   assert.equal(await vaultEnabled(db), true);
   assert.ok(await unlockVault(db, 'vault1'));
   assert.ok(!(await unlockVault(db, 'nope')));
-  await assert.rejects(setVaultPassword(db, 'v2', 'nope'), /Incorrect/);
-  await setVaultPassword(db, 'v2', 'vault1');
-  assert.ok(await unlockVault(db, 'v2'));
-  await setVaultPassword(db, '', 'v2');
+  await clearLegacyVault(db);
   assert.equal(await vaultEnabled(db), false);
 });
 

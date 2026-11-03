@@ -42,9 +42,9 @@ body { background: var(--color-tb-wash); color: var(--color-tb-ink); font-family
 
 .tb-spaced { letter-spacing: 0.22em; font-weight: 700; font-size: 13px; }
 
-.tb-decorated .tb-sub { display: none; }
-.tb-co-row th { border: 0; font-weight: 400; font-size: 14px; padding: 2px 8px; text-align: center; background: #fff; }
-.tb-co-row th.tb-co { border-top: 1px solid #222; border-left: 1px solid #222; }
+.tb-co { font-weight: 400; font-size: 14px; line-height: 17px; padding: 2px 8px; text-align: center; background: #fff; }
+.tb-co-frame { border-top: 1px solid #222; border-left: 1px solid #222; }
 .tb-co-name { font-weight: 700; }
-.tb-grand > td, .tb-grand > th { border-top: 1px solid #222 !important; border-bottom: 3px double #222 !important; border-left: 0 !important; border-right: 0 !important; position: sticky; bottom: 0; background: #fff; }
-.tb-fill > td { height: 100%; padding: 0; border: 0; }
+.tb-fit > thead > tr, .tb-fit > tbody > tr { height: 1px; }
+.tb-fit > tbody > tr.tb-grand { height: auto; }
+.tb-grand > td, .tb-grand > th { vertical-align: bottom; border-top: 1px solid #222 !important; border-bottom: 3px double #222 !important; border-left: 0 !important; border-right: 0 !important; position: sticky; bottom: 0; background: #fff; }

@@ -118,7 +118,7 @@ async function loadMoves(db: Db, to: string, orders = false, itemId?: number): P
     `SELECT m.id, m.voucher_id, m.item_id, COALESCE(m.godown_id, 1) AS godown_id, m.ledger_id, m.qty, m.rate, m.amount, m.discount_bp,
             v.date, t.name AS type, t.parent AS parent, v.number, v.party_id, COALESCE(p.name, '') AS party
      FROM stock_movements m JOIN vouchers v ON v.id = m.voucher_id JOIN voucher_types t ON t.id = v.type_id LEFT JOIN ledgers p ON p.id = v.party_id
-     WHERE v.cancelled = 0 AND v.date <= ? AND t.parent ${orders ? '' : 'NOT'} IN ${ORDER_PARENTS}${itemId ? ' AND m.item_id = ' + Number(itemId) : ''}
+     WHERE v.cancelled = 0 AND v.date <= ?${orders ? '' : ' AND m.tracked = 0'} AND t.parent ${orders ? '' : 'NOT'} IN ${ORDER_PARENTS}${itemId ? ' AND m.item_id = ' + Number(itemId) : ''}
      ORDER BY v.date, v.id, m.seq, m.id`,
     [to]
   );
@@ -1664,4 +1664,44 @@ export async function getItemPrice(db: Db, input: { item_id: number; date: strin
   const item = await stockItem(db, input.item_id);
   if (item && item.standard_price > 0) return { rate: item.standard_price, disc_bp: 0, source: 'standard', level_id: levelId };
   return { rate: 0, disc_bp: 0, source: 'none', level_id: levelId };
+}
+
+export interface PendingLine {
+  movement_id: number;
+  item_id: number;
+  godown_id: number | null;
+  balance: number;
+  rate: number;
+  discount_bp: number;
+}
+
+export interface PendingDoc {
+  voucher_id: number;
+  number: string;
+  date: string;
+  parent: string;
+  tracks_stock: boolean;
+  lines: PendingLine[];
+}
+
+export async function pendingDocs(db: Db, kind: 'Sales' | 'Purchase', target: 'invoice' | 'note', partyId: number, asAt: string): Promise<PendingDoc[]> {
+  const order = `${kind} Order`;
+  const note = kind === 'Sales' ? 'Delivery Note' : 'Receipt Note';
+  const parents = target === 'invoice' ? [note, order] : [order];
+  const rows = await db.select<{ id: number; voucher_id: number; number: string; date: string; parent: string; item_id: number; godown_id: number | null; qty: number; rate: number; discount_bp: number; done: number; pre: number | null }>(
+    `SELECT m.id, m.voucher_id, v.number, v.date, t.parent, m.item_id, m.godown_id, m.qty, m.rate, m.discount_bp,
+            COALESCE((SELECT SUM(k.qty) FROM stockx_track k WHERE k.against_id = m.id), 0) AS done, o.preclosed AS pre
+     FROM stock_movements m JOIN vouchers v ON v.id = m.voucher_id JOIN voucher_types t ON t.id = v.type_id LEFT JOIN stockx_order_meta o ON o.movement_id = m.id
+     WHERE v.cancelled = 0 AND v.date <= ? AND v.party_id = ? AND t.parent IN (${parents.map(() => '?').join(', ')})
+     ORDER BY v.date, v.id, m.seq`,
+    [asAt, partyId, ...parents]
+  );
+  const docs = new Map<number, PendingDoc>();
+  for (const r of rows) {
+    const balance = Math.abs(r.qty) - r.done;
+    if (balance <= 0 || r.pre) continue;
+    const d = docs.get(r.voucher_id) ?? docs.set(r.voucher_id, { voucher_id: r.voucher_id, number: r.number, date: r.date, parent: r.parent, tracks_stock: r.parent === note, lines: [] }).get(r.voucher_id)!;
+    d.lines.push({ movement_id: r.id, item_id: r.item_id, godown_id: r.godown_id, balance, rate: r.rate, discount_bp: r.discount_bp });
+  }
+  return [...docs.values()];
 }

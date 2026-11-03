@@ -4,6 +4,18 @@ All notable changes to TallyBook are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-03
+
+### Added
+- TallyVault now encrypts company data at rest (SQLCipher in the desktop app, AES-GCM in the browser) and encrypts backups. Set, change or remove it under Company (Alt+K) → Company Security. A lost password cannot be recovered.
+- Sales and Purchase invoices ask for a Tracking No. when the party has pending Delivery/Receipt Notes or Orders, fill in the pending items, and link them. Delivery and Receipt Notes ask for an Order No.
+- Balance Sheet and Profit & Loss A/c: Alt+F1 detailed view, F12 options (vertical layout, percentages, working capital, gross profit section, hide zero balances) and Ctrl+F filter.
+- Bills Receivable and Payable: ageing columns (0–30, 30–60, 60–90, over 90 days) via F12.
+
+### Fixed
+- An invoice raised against a Delivery Note or Receipt Note no longer changes stock a second time.
+- Report screens no longer crash when rows change (the company header and pinned Grand Total are drawn without altering the table).
+
 ## [0.1.4] - 2026-11-03
 
 ### Added

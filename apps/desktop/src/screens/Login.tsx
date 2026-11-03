@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import {
   can as canDo,
   changePassword,
+  clearLegacyVault,
   currentUser,
   login,
   onUserChange,
@@ -15,6 +16,7 @@ import {
 import { useScreen } from '../registry.ts';
 import { useStore } from '../store.tsx';
 import { useNav } from '../nav.tsx';
+import { vault } from '../db/index.ts';
 
 export type MiniKind = 'text' | 'password' | 'yesno' | 'number' | 'date' | 'choice' | 'static';
 
@@ -167,13 +169,21 @@ export function LoginGate({ children }: { children: ReactNode }) {
   const [vaultOk, setVaultOk] = useState<boolean | null>(null);
   useEffect(() => {
     let live = true;
-    void vaultEnabled(books.db).then((v) => live && setVaultOk(!v));
+    void (async () => {
+      const legacy = await vaultEnabled(books.db).catch(() => false);
+      if (legacy && vault().encrypted()) {
+        await clearLegacyVault(books.db).catch(() => undefined);
+        if (live) setVaultOk(true);
+        return;
+      }
+      if (live) setVaultOk(!legacy);
+    })();
     return () => {
       live = false;
     };
   }, [books, company?.name]);
   if (vaultOk === null) return null;
-  if (!vaultOk) return <VaultPrompt onOpen={() => setVaultOk(true)} />;
+  if (!vaultOk) return <LegacyVaultPrompt onOpen={() => setVaultOk(true)} />;
   if (enabled && !user) return <LoginScreen onLogin={setUser} />;
   return <>{children}</>;
 }
@@ -189,22 +199,83 @@ function Panel({ title, children, width = 440 }: { title: string; children: Reac
   );
 }
 
-function VaultPrompt({ onOpen }: { onOpen: () => void }) {
-  const { books, toast } = useStore();
+const errText = (e: unknown) => (e instanceof Error ? e.message : typeof e === 'string' ? e : 'Something went wrong');
+
+function VaultPasswordForm({ message, submit, busyText = 'Checking password...' }: { message?: ReactNode; submit: (password: string) => Promise<void>; busyText?: string }) {
   const [v, setV] = useState<MiniValues>({ pw: '' });
   const [err, setErr] = useState('');
-  const submit = async () => {
-    if (await unlockVault(books.db, v.pw)) onOpen();
-    else {
-      setErr('Incorrect TallyVault password');
-      toast('Incorrect TallyVault password', 'err');
+  const [busy, setBusy] = useState(false);
+  const go = async () => {
+    if (busy) return;
+    if (!v.pw) return setErr('Enter the TallyVault password');
+    setBusy(true);
+    setErr('');
+    try {
+      await submit(v.pw);
+    } catch (e) {
+      setErr(errText(e));
+      setV({ pw: '' });
+    } finally {
+      setBusy(false);
     }
   };
-  useScreen({ title: 'TallyVault', noPeriod: true, swallow: true, kind: 'modal', keys: {}, buttons: [] });
   return (
-    <Panel title="TallyVault Password" width={400}>
-      <MiniForm labelWidth={140} rows={[{ key: 'pw', label: 'Password', kind: 'password' }]} values={v} onChange={(k, x) => setV((s) => ({ ...s, [k]: x }))} onDone={() => void submit()} />
+    <>
+      {message && <div className="mb-3">{message}</div>}
+      <MiniForm
+        labelWidth={140}
+        rows={[{ key: 'pw', label: 'Password', kind: 'password' }]}
+        values={v}
+        onChange={(k, x) => {
+          setErr('');
+          setV((s) => ({ ...s, [k]: x }));
+        }}
+        onDone={() => void go()}
+      />
+      {busy && <div className="mt-3 text-tb-muted">{busyText}</div>}
       {err && <div className="mt-3 text-tb-danger">{err}</div>}
+    </>
+  );
+}
+
+export function VaultUnlock({ unlock }: { unlock: (password: string) => Promise<void> }) {
+  return (
+    <Panel title="TallyVault Password" width={460}>
+      <VaultPasswordForm message="This company is encrypted with TallyVault. Enter the TallyVault password to open it." submit={unlock} busyText="Opening company..." />
+    </Panel>
+  );
+}
+
+export function VaultPasswordPanel({ title, message, submit, onCancel }: { title: string; message?: ReactNode; submit: (password: string) => Promise<void>; onCancel: () => void }) {
+  useScreen({ title, noPeriod: true, kind: 'modal', keys: { Escape: () => onCancel() }, buttons: [] });
+  return (
+    <Panel title={title} width={460}>
+      <VaultPasswordForm message={message} submit={submit} />
+      <div className="mt-3 text-xs italic text-tb-muted">Press Esc to cancel</div>
+    </Panel>
+  );
+}
+
+function LegacyVaultPrompt({ onOpen }: { onOpen: () => void }) {
+  const { books, toast } = useStore();
+  const submit = async (pw: string) => {
+    if (!(await unlockVault(books.db, pw))) {
+      toast('Incorrect TallyVault password', 'err');
+      throw new Error('Incorrect TallyVault password');
+    }
+    try {
+      await vault().change('', pw);
+      await clearLegacyVault(books.db);
+      toast('Company data is now encrypted with TallyVault', 'ok');
+    } catch (e) {
+      toast(`Could not encrypt the company data: ${errText(e)}`, 'err');
+    }
+    onOpen();
+  };
+  useScreen({ title: 'TallyVault', noPeriod: true, kind: 'modal', keys: {}, buttons: [] });
+  return (
+    <Panel title="TallyVault Password" width={460}>
+      <VaultPasswordForm message="Enter the TallyVault password. The company data will be encrypted with it." submit={submit} />
     </Panel>
   );
 }

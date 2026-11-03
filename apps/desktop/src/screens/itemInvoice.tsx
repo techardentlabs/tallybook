@@ -7,6 +7,7 @@ import {
   lineAmount,
   parseAmount,
   parseQty,
+  pendingDocs,
   planItemInvoice,
   stateCode,
   stateCodeOfGstin,
@@ -14,6 +15,7 @@ import {
   stockItems as loadItems,
   taxLedgerName,
   type Godown,
+  type PendingDoc,
   type Ledger,
   type StockItem,
 } from '@tallybook/core';
@@ -29,6 +31,8 @@ interface Line {
   godownText: string;
   qty: string;
   rate: string;
+  against?: number;
+  tracked?: boolean;
 }
 
 const blank = (g?: Godown): Line => ({ item: null, text: '', godown: g ?? null, godownText: g?.name ?? '', qty: '', rate: '' });
@@ -61,6 +65,9 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
   const [partyText, setPartyText] = useState(initParty?.name ?? '');
   const [party, setParty] = useState<Ledger | null>(initParty ?? null);
   const [pos, setPos] = useState(initial?.place_of_supply ?? '');
+  const [docs, setDocs] = useState<PendingDoc[]>([]);
+  const [trackText, setTrackText] = useState('Not Applicable');
+  const canTrack = type.parent === 'Sales' || type.parent === 'Purchase';
   const firstSupply = initial?.items?.[0]?.ledgerId ? supplyLedgers.find((l) => l.id === initial.items![0].ledgerId) : undefined;
   const [slText, setSlText] = useState(firstSupply?.name ?? '');
   const [sl, setSl] = useState<Ledger | null>(firstSupply ?? null);
@@ -76,7 +83,7 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
       initial.items.map((it) => {
         const item = items.find((x) => x.id === it.item_id) ?? null;
         const g = houses.find((x) => x.id === it.godown_id) ?? houses[0] ?? null;
-        return { item, text: item?.name ?? '', godown: g, godownText: g?.name ?? '', qty: fmtQty(Math.abs(it.qty), 0), rate: fmtAmount(it.rate) };
+        return { item, text: item?.name ?? '', godown: g, godownText: g?.name ?? '', qty: fmtQty(Math.abs(it.qty), 0), rate: fmtAmount(it.rate), tracked: !!it.tracked };
       })
     );
   }, [initial, items, houses]);
@@ -159,10 +166,11 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
             books,
             kind,
             party.id,
-            rows.map((l) => ({ item_id: l.item!.id, godown_id: l.godown?.id ?? 1, ledger_id: sl.id, qty: parseQty(l.qty)!, rate: parseAmount(l.rate) ?? 0 })),
+            rows.map((l) => ({ item_id: l.item!.id, godown_id: l.godown?.id ?? 1, ledger_id: sl.id, qty: parseQty(l.qty)!, rate: parseAmount(l.rate) ?? 0, tracked: !!l.tracked })),
             { placeOfSupply: posCode }
           );
-          return { entries: plan.entries, party_id: party.id, place_of_supply: plan.place_of_supply, stock: plan.stock };
+          const track = rows.flatMap((l, index) => (l.against ? [{ index, against: l.against, qty: parseQty(l.qty)! }] : []));
+          return { entries: plan.entries, party_id: party.id, place_of_supply: plan.place_of_supply, stock: plan.stock, track };
         } catch (e) {
           toast((e as Error).message, 'err');
           return null;
@@ -217,13 +225,53 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
                 setPartyText(l.name);
                 const code = stateCodeOfGstin(l.gstin) || stateCode(l.state);
                 setPos(code ? stateName(code) : '');
-                focus('pos');
+                if (canTrack && !initial?.items?.length) {
+                  void pendingDocs(books.db, type.parent as 'Sales' | 'Purchase', 'invoice', l.id, props.date).then((d) => {
+                    setDocs(d);
+                    setTrackText('Not Applicable');
+                    focus(d.length ? 'track' : 'pos');
+                  });
+                } else focus('pos');
               }}
               onNoMatch={() => toast('Select the party from the list', 'err')}
               onCreate={(text) => window.dispatchEvent(new CustomEvent('tb:create-ledger', { detail: { text, rowIndex: -1 } }))}
             />
           </div>
         </div>
+        {canTrack && docs.length > 0 && (
+          <div className="flex items-center">
+            <span className={label}>Tracking No.</span>
+            <span className="mr-2">:</span>
+            <div className="w-[360px]">
+              <PickerInput
+                className="tb-input w-full font-bold"
+                value={trackText}
+                title="Tracking Numbers"
+                options={[{ id: 0, label: 'Not Applicable' }, ...docs.map((d) => ({ id: d.voucher_id, label: d.number, sub: `${d.parent} · ${d.date.split('-').reverse().join('-')}` }))]}
+                inputRef={(el) => el?.setAttribute('data-cell', 'track')}
+                onChange={(t) => setTrackText(t)}
+                onPick={(o) => {
+                  setTrackText(o.label);
+                  const d = docs.find((x) => x.voucher_id === o.id);
+                  if (d) {
+                    touch();
+                    setLines([
+                      ...d.lines.map((pl) => {
+                        const it = items.find((x) => x.id === pl.item_id) ?? null;
+                        const g = houses.find((x) => x.id === pl.godown_id) ?? houses[0] ?? null;
+                        return { item: it, text: it?.name ?? '', godown: g, godownText: g?.name ?? '', qty: fmtQty(pl.balance, 0), rate: fmtAmount(pl.rate), against: pl.movement_id, tracked: d.tracks_stock };
+                      }),
+                      blank(houses[0]),
+                    ]);
+                  }
+                  focus('pos');
+                }}
+                onNoMatch={() => toast('Choose a tracking number or Not Applicable', 'err')}
+                onBackspaceEmpty={() => focus('party')}
+              />
+            </div>
+          </div>
+        )}
         <div className="flex items-center">
           <span className={label}>Place of supply</span>
           <span className="mr-2">:</span>

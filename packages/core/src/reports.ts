@@ -1,4 +1,4 @@
-import { stockSummary } from './inventory.ts';
+import { stockSummary, type StockRow } from './inventory.ts';
 import { CoreError, one, type Db } from './db.ts';
 import type { Group } from './books.ts';
 
@@ -136,9 +136,11 @@ export async function groupSummary(db: Db, from: string, to: string, groupId: nu
 
 export interface PlRow {
   id?: number;
+  kind?: 'group' | 'ledger' | 'stock';
   label: string;
   amount: number;
   bold?: boolean;
+  children?: PlRow[];
 }
 
 export interface Side {
@@ -148,30 +150,43 @@ export interface Side {
   totalRight: number;
 }
 
+export interface PlParts {
+  openingStock: PlRow | null;
+  closingStock: PlRow | null;
+  purchases: PlRow;
+  directExpenses: PlRow;
+  sales: PlRow;
+  directIncomes: PlRow;
+  indirectExpenses: PlRow;
+  indirectIncomes: PlRow;
+}
+
 export interface ProfitLoss {
   from: string;
   to: string;
   gross: number;
   net: number;
+  sales: number;
   trading: Side;
   pl: Side;
+  single: Side;
+  parts: PlParts;
 }
 
 const sum = (rows: PlRow[]) => rows.reduce((s, r) => s + r.amount, 0);
 
+function groupRow(tree: Tree, stats: LedgerStat[], totals: Map<number, Totals>, g: Group, sign: number): PlRow {
+  const children: PlRow[] = [];
+  for (const c of tree.children.get(g.id) ?? []) children.push({ id: c.id, kind: 'group', label: c.name, amount: sign * totals.get(c.id)!.closing });
+  for (const s of stats) if (s.group_id === g.id) children.push({ id: s.id, kind: 'ledger', label: s.name, amount: sign * s.closing });
+  return { id: g.id, kind: 'group', label: g.name, amount: sign * totals.get(g.id)!.closing, children };
+}
+
 export async function profitAndLoss(db: Db, from: string, to: string): Promise<ProfitLoss> {
-  const { tree, totals } = await groupTotals(db, from, to);
+  const { tree, stats, totals } = await groupTotals(db, from, to);
   const find = (name: string) => tree.groups.find((g) => g.name === name)!;
-  const exp = (name: string): PlRow => {
-    const g = find(name);
-    const t = totals.get(g.id)!;
-    return { id: g.id, label: name, amount: t.debit - t.credit };
-  };
-  const inc = (name: string): PlRow => {
-    const g = find(name);
-    const t = totals.get(g.id)!;
-    return { id: g.id, label: name, amount: t.credit - t.debit };
-  };
+  const exp = (name: string): PlRow => groupRow(tree, stats, totals, find(name), 1);
+  const inc = (name: string): PlRow => groupRow(tree, stats, totals, find(name), -1);
   const purchases = exp('Purchase Accounts');
   const directExp = exp('Direct Expenses');
   const sales = inc('Sales Accounts');
@@ -183,9 +198,12 @@ export async function profitAndLoss(db: Db, from: string, to: string): Promise<P
   const stock = hasItems ? await stockSummary(db, from, to) : null;
   const openingStock = stock?.opening_value ?? 0;
   const closingStock = stock?.closing_value ?? 0;
+  const items = (pick: (r: StockRow) => number): PlRow[] => (stock?.rows ?? []).filter((r) => pick(r) !== 0).map((r) => ({ kind: 'stock', label: r.name, amount: pick(r) }));
+  const os: PlRow | null = stock ? { kind: 'stock', label: 'Opening Stock', amount: openingStock, children: items((r) => r.opening_value) } : null;
+  const cs: PlRow | null = stock ? { kind: 'stock', label: 'Closing Stock', amount: closingStock, children: items((r) => r.closing_value) } : null;
   const gross = sales.amount + directInc.amount - purchases.amount - directExp.amount + closingStock - openingStock;
-  const tl: PlRow[] = stock ? [{ label: 'Opening Stock', amount: openingStock }, purchases, directExp] : [purchases, directExp];
-  const tr: PlRow[] = stock ? [sales, directInc, { label: 'Closing Stock', amount: closingStock }] : [sales, directInc];
+  const tl: PlRow[] = os ? [os, purchases, directExp] : [purchases, directExp];
+  const tr: PlRow[] = cs ? [sales, directInc, cs] : [sales, directInc];
   if (gross >= 0) tl.push({ label: 'Gross Profit c/o', amount: gross, bold: true });
   else tr.push({ label: 'Gross Loss c/o', amount: -gross, bold: true });
 
@@ -196,17 +214,30 @@ export async function profitAndLoss(db: Db, from: string, to: string): Promise<P
   else pr.push({ label: 'Gross Profit b/f', amount: gross, bold: true });
   pl.push(indirectExp);
   pr.push(indirectInc);
-  if (net >= 0) pl.push({ label: 'Nett Profit', amount: net, bold: true });
-  else pr.push({ label: 'Nett Loss', amount: -net, bold: true });
+  const result: PlRow = net >= 0 ? { label: 'Nett Profit', amount: net, bold: true } : { label: 'Nett Loss', amount: -net, bold: true };
+  (net >= 0 ? pl : pr).push(result);
+
+  const sl: PlRow[] = [...(os ? [os] : []), purchases, directExp, indirectExp];
+  const sr: PlRow[] = [sales, directInc, indirectInc, ...(cs ? [cs] : [])];
+  (net >= 0 ? sl : sr).push(result);
 
   return {
     from,
     to,
     gross,
     net,
+    sales: sales.amount,
     trading: { left: tl, right: tr, totalLeft: sum(tl), totalRight: sum(tr) },
     pl: { left: pl, right: pr, totalLeft: sum(pl), totalRight: sum(pr) },
+    single: { left: sl, right: sr, totalLeft: sum(sl), totalRight: sum(sr) },
+    parts: { openingStock: os, closingStock: cs, purchases, directExpenses: directExp, sales, directIncomes: directInc, indirectExpenses: indirectExp, indirectIncomes: indirectInc },
   };
+}
+
+export interface WorkingCapital {
+  current_assets: number;
+  current_liabilities: number;
+  amount: number;
 }
 
 export interface BalanceSheet {
@@ -216,28 +247,45 @@ export interface BalanceSheet {
   assets: PlRow[];
   totalLiabilities: number;
   totalAssets: number;
+  net: number;
+  working_capital: WorkingCapital;
 }
 
 export async function balanceSheet(db: Db, from: string, to: string): Promise<BalanceSheet> {
-  const { tree, totals } = await groupTotals(db, from, to);
+  const { tree, stats, totals } = await groupTotals(db, from, to);
   const pl = await profitAndLoss(db, from, to);
   const liabilities: PlRow[] = [];
   const assets: PlRow[] = [];
   for (const g of tree.children.get(0) ?? []) {
-    const t = totals.get(g.id)!;
-    if (g.nature === 'Liabilities') liabilities.push({ id: g.id, label: g.name, amount: -t.closing });
-    else if (g.nature === 'Assets') assets.push({ id: g.id, label: g.name, amount: t.closing });
+    if (g.nature === 'Liabilities') liabilities.push(groupRow(tree, stats, totals, g, -1));
+    else if (g.nature === 'Assets') assets.push(groupRow(tree, stats, totals, g, 1));
   }
+  let closing = 0;
   if ((await db.select('SELECT 1 FROM stock_items LIMIT 1')).length) {
-    const closing = (await stockSummary(db, from, to)).closing_value;
-    assets.push({ label: 'Closing Stock', amount: closing });
+    const st = await stockSummary(db, from, to);
+    closing = st.closing_value;
+    assets.push({ kind: 'stock', label: 'Closing Stock', amount: closing, children: st.rows.filter((r) => r.closing_value !== 0).map((r) => ({ kind: 'stock', label: r.name, amount: r.closing_value })) });
   }
-  if (pl.net >= 0) liabilities.push({ label: 'Profit & Loss A/c', amount: pl.net, bold: true });
-  else assets.push({ label: 'Profit & Loss A/c', amount: -pl.net, bold: true });
+  const period = (amount: number): PlRow[] => [{ label: 'Current Period', amount }];
+  if (pl.net >= 0) liabilities.push({ label: 'Profit & Loss A/c', amount: pl.net, bold: true, children: period(pl.net) });
+  else assets.push({ label: 'Profit & Loss A/c', amount: -pl.net, bold: true, children: period(-pl.net) });
   const diff = sum(assets) - sum(liabilities);
   if (diff > 0) liabilities.push({ label: 'Difference in Opening Balances', amount: diff, bold: true });
   else if (diff < 0) assets.push({ label: 'Difference in Opening Balances', amount: -diff, bold: true });
-  return { from, to, liabilities, assets, totalLiabilities: sum(liabilities), totalAssets: sum(assets) };
+  const ca = tree.groups.find((g) => g.name === 'Current Assets');
+  const cl = tree.groups.find((g) => g.name === 'Current Liabilities');
+  const current_assets = (ca ? totals.get(ca.id)!.closing : 0) + closing;
+  const current_liabilities = cl ? -totals.get(cl.id)!.closing : 0;
+  return {
+    from,
+    to,
+    liabilities,
+    assets,
+    totalLiabilities: sum(liabilities),
+    totalAssets: sum(assets),
+    net: pl.net,
+    working_capital: { current_assets, current_liabilities, amount: current_assets - current_liabilities },
+  };
 }
 
 export interface DayBookRow {
@@ -421,6 +469,51 @@ export async function outstandings(db: Db, side: 'receivable' | 'payable', asOf:
     total += s.closing * sign;
   }
   return { side, as_of: asOf, ledgers, total };
+}
+
+export interface LedgerAgeing {
+  ledger_id: number;
+  ages: number[];
+  bills: number[];
+  buckets: number[];
+}
+
+export interface OutstandingAgeing {
+  by: 'bill' | 'due';
+  labels: string[];
+  ledgers: LedgerAgeing[];
+  total: number[];
+}
+
+export function ageingLabels(limits: number[]): string[] {
+  return [...limits.map((l, i) => `${i ? limits[i - 1] : 0} to ${l} days`), `> ${limits[limits.length - 1]} days`];
+}
+
+export function ageingBucket(days: number, limits: number[]): number {
+  let i = 0;
+  while (i < limits.length && days > limits[i]) i++;
+  return i;
+}
+
+export function billAge(bill: OutstandingBill, asOf: string, by: 'bill' | 'due' = 'due'): number {
+  const ref = by === 'due' ? bill.due_date || bill.bill_date : bill.bill_date;
+  return ref ? Math.max(0, daysBetween(ref, asOf)) : 0;
+}
+
+export function outstandingAgeing(o: Outstandings, by: 'bill' | 'due' = 'due', limits: number[] = [30, 60, 90]): OutstandingAgeing {
+  const total = new Array<number>(limits.length + 1).fill(0);
+  const ledgers = o.ledgers.map((l) => {
+    const buckets = new Array<number>(limits.length + 1).fill(0);
+    const ages = l.bills.map((b) => billAge(b, o.as_of, by));
+    const bills = ages.map((a, i) => {
+      const k = ageingBucket(a, limits);
+      buckets[k] += l.bills[i].pending;
+      total[k] += l.bills[i].pending;
+      return k;
+    });
+    return { ledger_id: l.ledger_id, ages, bills, buckets };
+  });
+  return { by, labels: ageingLabels(limits), ledgers, total };
 }
 
 export interface RegisterMonth {

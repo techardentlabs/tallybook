@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { fmtAmount, fmtQty, godowns as loadGodowns, lineAmount, parseAmount, parseQty, stockItems as loadItems, type Godown, type Ledger, type StockItem } from '@tallybook/core';
+import { fmtAmount, fmtQty, godowns as loadGodowns, lineAmount, parseAmount, parseQty, pendingDocs, stockItems as loadItems, type Godown, type Ledger, type PendingDoc, type StockItem } from '@tallybook/core';
 import { PickerInput, type Opt } from '../ui/PickerInput.tsx';
 import { useStore } from '../store.tsx';
 import { PARTY_ROOTS, isUnder } from '../lib.ts';
@@ -13,6 +13,7 @@ interface Line {
   side: 'Out' | 'In';
   qty: string;
   rate: string;
+  against?: number;
 }
 
 const WITH_PARTY = ['Delivery Note', 'Receipt Note', 'Sales Order', 'Purchase Order', 'Rejection In', 'Rejection Out'];
@@ -46,6 +47,9 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
   const initParty = initial?.party_id ? partyLedgers.find((l) => l.id === initial.party_id) : undefined;
   const [partyText, setPartyText] = useState(initParty?.name ?? '');
   const [party, setParty] = useState<Ledger | null>(initParty ?? null);
+  const [orders, setOrders] = useState<PendingDoc[]>([]);
+  const [orderText, setOrderText] = useState('Not Applicable');
+  const orderKind = parent === 'Delivery Note' ? 'Sales' : parent === 'Receipt Note' ? 'Purchase' : null;
   const [lines, setLines] = useState<Line[]>([blank(undefined, 'Out')]);
   const box = useRef<HTMLDivElement>(null);
   const dirty = useRef(false);
@@ -105,7 +109,8 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
           const rate = parseAmount(l.rate) ?? 0;
           return { item_id: l.item!.id, godown_id: l.godown?.id ?? 1, qty: physical ? q : signFor(l) * q, rate, amount: lineAmount(q, rate) };
         });
-        return { entries: [], party_id: party?.id ?? null, stock };
+        const track = rows.flatMap((l, index) => (l.against ? [{ index, against: l.against, qty: parseQty(l.qty)! }] : []));
+        return { entries: [], party_id: party?.id ?? null, stock, track };
       },
       reset() {
         dirty.current = false;
@@ -156,10 +161,50 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
                 const l = ledgers.find((x) => x.id === o.id)!;
                 setParty(l);
                 setPartyText(l.name);
-                focus('i0-0');
+                if (orderKind && !initial?.items?.length) {
+                  void pendingDocs(books.db, orderKind, 'note', l.id, props.date).then((d) => {
+                    setOrders(d);
+                    setOrderText('Not Applicable');
+                    focus(d.length ? 'order' : 'i0-0');
+                  });
+                } else focus('i0-0');
               }}
               onNoMatch={() => toast('Select the party from the list', 'err')}
               onCreate={(text) => window.dispatchEvent(new CustomEvent('tb:create-ledger', { detail: { text, rowIndex: -1 } }))}
+            />
+          </div>
+        </div>
+      )}
+      {orderKind && orders.length > 0 && (
+        <div className="flex items-center">
+          <span className="w-44">Order No.</span>
+          <span className="mr-2">:</span>
+          <div className="w-[360px]">
+            <PickerInput
+              className="tb-input w-full font-bold"
+              value={orderText}
+              title="Orders"
+              options={[{ id: 0, label: 'Not Applicable' }, ...orders.map((d) => ({ id: d.voucher_id, label: d.number, sub: `${d.parent} · ${d.date.split('-').reverse().join('-')}` }))]}
+              inputRef={(el) => el?.setAttribute('data-cell', 'order')}
+              onChange={(t) => setOrderText(t)}
+              onPick={(o) => {
+                setOrderText(o.label);
+                const d = orders.find((x) => x.voucher_id === o.id);
+                if (d) {
+                  touch();
+                  setLines([
+                    ...d.lines.map((pl) => {
+                      const it = items.find((x) => x.id === pl.item_id) ?? null;
+                      const g = houses.find((x) => x.id === pl.godown_id) ?? houses[0] ?? null;
+                      return { item: it, text: it?.name ?? '', godown: g, godownText: g?.name ?? '', side: 'Out' as const, qty: fmtQty(pl.balance, 0), rate: fmtAmount(pl.rate), against: pl.movement_id };
+                    }),
+                    blank(houses[0], 'Out'),
+                  ]);
+                }
+                focus('i0-0');
+              }}
+              onNoMatch={() => toast('Choose an order or Not Applicable', 'err')}
+              onBackspaceEmpty={() => focus('party')}
             />
           </div>
         </div>
