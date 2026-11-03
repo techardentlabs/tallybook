@@ -4,6 +4,8 @@ All notable changes to TallyBook are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-03
+
 ### Added
 - Job Work: "Enable Job Order Processing" in F11 adds Job Work Out Order, Job Work In Order, Material Out and Material In vouchers. Orders record Duration of Process and Nature of Processing; Material Out/In pick the Order No(s), fill the pending components or finished goods, move stock to or from the job worker's godown at cost, and consume components on receipt when the voucher type allows it. Godowns can be marked "Our Stock with Third Party" or "Third Party Stock with Us" (the latter stays out of your stock value). Reports: Job Work Orders Summary, Components Order Summary, Job Work Out/In Orders Book, Material Out/In Register, Material Movement Register, Stock with Job Worker, Stock from Party, Issue and Receipt Variance Analysis.
 - Godowns can be altered (Alter → Godown).
