@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, useSyncExternalStore } from 'react';
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+import { ACCESS_DENIED, canAllCurrent, screenActions } from '@tallybook/core';
 
 export interface Btn {
   key: string;
@@ -33,10 +34,44 @@ function emit() {
   for (const l of listeners) l();
 }
 
+export interface ScreenGuard {
+  deny: (message: string) => void;
+}
+
+export const ScreenGuardCtx = createContext<ScreenGuard | null>(null);
+
+let deniedHandler: ((message: string) => void) | null = null;
+
+export function onAccessDenied(fn: (message: string) => void): () => void {
+  deniedHandler = fn;
+  return () => {
+    if (deniedHandler === fn) deniedHandler = null;
+  };
+}
+
+export function showAccessDenied(message: string = ACCESS_DENIED): void {
+  deniedHandler?.(message);
+}
+
+export function entryTitles(): string[] {
+  return entries.map((e) => e.opts.title).reverse();
+}
+
+export function screenDenial(title: string, below: string[] = entryTitles()): string | null {
+  return canAllCurrent(screenActions(title, below)) ? null : ACCESS_DENIED;
+}
+
 export function useScreen(opts: ScreenOpts): void {
   const id = useId();
   const ref = useRef<Entry>({ id, opts });
   ref.current.opts = opts;
+  const guard = useContext(ScreenGuardCtx);
+  useLayoutEffect(() => {
+    if (!guard || opts.kind === 'modal') return;
+    const below = entries.filter((e) => e !== ref.current).map((e) => e.opts.title).reverse();
+    const denial = screenDenial(opts.title, below);
+    if (denial) guard.deny(denial);
+  }, [guard, opts.title, opts.kind]);
   useEffect(() => {
     const entry = ref.current;
     entries.push(entry);

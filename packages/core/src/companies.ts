@@ -12,6 +12,8 @@ export interface CompanyEntry {
   last_opened: string | null;
   fy_start?: string;
   fy_end?: string;
+  kind?: 'group';
+  members?: string[];
 }
 
 export interface CompanyIndex {
@@ -56,6 +58,10 @@ function entryFrom(raw: unknown): CompanyEntry | null {
   const to = str(r.fy_end);
   if (from && ISO_RE.test(from)) e.fy_start = from;
   if (to && ISO_RE.test(to)) e.fy_end = to;
+  if (r.kind === 'group') {
+    e.kind = 'group';
+    e.members = Array.isArray(r.members) ? [...new Set(r.members.filter((m): m is string => typeof m === 'string' && ID_RE.test(m) && m !== id))] : [];
+  }
   return e;
 }
 
@@ -124,6 +130,50 @@ export function addCompanyEntry(index: CompanyIndex, entry: CompanyEntry): Compa
   if (index.companies.some((c) => c.id === entry.id)) throw new CoreError('conflict', `Company number ${entry.id} already exists`);
   if (index.companies.some((c) => c.file === entry.file)) throw new CoreError('conflict', 'Company data file is already in use');
   return { ...index, companies: [...index.companies, { ...entry, name: entry.name.trim() }] };
+}
+
+export const MIN_GROUP_MEMBERS = 2;
+
+export function isGroupEntry(entry: CompanyEntry | null | undefined): boolean {
+  return entry?.kind === 'group';
+}
+
+export function groupMemberChoices(index: CompanyIndex, exceptId?: string): CompanyEntry[] {
+  return sortedCompanyEntries(index).filter((c) => !isGroupEntry(c) && c.id !== exceptId);
+}
+
+function checkMembers(index: CompanyIndex, id: string, members: string[]): string[] {
+  const list = [...new Set(members)];
+  if (list.length < MIN_GROUP_MEMBERS) throw new CoreError('invalid', `A Group Company needs at least ${MIN_GROUP_MEMBERS} member companies`);
+  for (const m of list) {
+    const e = findCompanyEntry(index, m);
+    if (!e) throw new CoreError('not_found', `Member company ${m} is not in the list of companies`);
+    if (m === id) throw new CoreError('invalid', 'A Group Company cannot be its own member');
+    if (isGroupEntry(e)) throw new CoreError('invalid', `${companyEntryLabel(e)} is a Group Company and cannot be a member`);
+  }
+  return list;
+}
+
+export function addGroupCompany(index: CompanyIndex, input: { id: string; name: string; file: string; members: string[] }): CompanyIndex {
+  const name = input.name.trim();
+  if (!name) throw new CoreError('invalid', 'Name of the Group Company is required');
+  if (index.companies.some((c) => c.name.trim().toLowerCase() === name.toLowerCase())) throw new CoreError('conflict', `Company "${name}" already exists`);
+  const members = checkMembers(index, input.id, input.members);
+  return addCompanyEntry(index, { id: input.id, name, file: input.file, last_opened: null, kind: 'group', members });
+}
+
+export function alterGroupCompany(index: CompanyIndex, id: string, patch: { name?: string; members?: string[] }): CompanyIndex {
+  const cur = findCompanyEntry(index, id);
+  if (!cur || !isGroupEntry(cur)) throw new CoreError('not_found', 'Group Company not in list');
+  const name = (patch.name ?? cur.name).trim();
+  if (!name) throw new CoreError('invalid', 'Name of the Group Company is required');
+  if (index.companies.some((c) => c.id !== id && c.name.trim().toLowerCase() === name.toLowerCase())) throw new CoreError('conflict', `Company "${name}" already exists`);
+  const members = patch.members ? checkMembers(index, id, patch.members) : cur.members ?? [];
+  return { ...index, companies: index.companies.map((c) => (c.id === id ? { ...c, name, members } : c)) };
+}
+
+export function groupsContaining(index: CompanyIndex, memberId: string): CompanyEntry[] {
+  return index.companies.filter((c) => isGroupEntry(c) && (c.members ?? []).includes(memberId));
 }
 
 export function updateCompanyEntry(index: CompanyIndex, id: string, patch: { name?: string; fy_start?: string; fy_end?: string }): CompanyIndex {

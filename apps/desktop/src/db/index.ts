@@ -24,12 +24,22 @@ export interface Backend {
   open(password?: string): Promise<Opened>;
 }
 
+export interface Attached {
+  db: Db;
+  encrypted: boolean;
+  close(): Promise<void>;
+}
+
 export interface Registry {
   location: string;
   style: CompanyFileStyle;
   load(): Promise<CompanyIndex>;
   save(index: CompanyIndex): Promise<void>;
   open(entry: CompanyEntry): Promise<Storage>;
+  isEncrypted(entry: CompanyEntry): Promise<boolean>;
+  attach(entry: CompanyEntry, opts: { readonly: boolean; password?: string }): Promise<Attached>;
+  create(entry: CompanyEntry, password?: string): Promise<Attached>;
+  memory(): Promise<Db>;
 }
 
 let active: Vault | null = null;
@@ -57,10 +67,12 @@ export function storageOf(b: Backend): Storage {
 }
 
 export async function openRegistry(): Promise<Registry> {
-  if (isTauri()) {
-    const { openTauriRegistry } = await import('./tauri.ts');
-    return openTauriRegistry();
-  }
-  const { openWebRegistry } = await import('./web.ts');
-  return openWebRegistry();
+  const base: Registry = isTauri() ? await (await import('./tauri.ts')).openTauriRegistry() : await (await import('./web.ts')).openWebRegistry();
+  const { groupStorage } = await import('./group.ts');
+  const reg: Registry = {
+    ...base,
+    open: (entry) => (entry.kind === 'group' ? groupStorage(reg, entry) : base.open(entry)),
+    isEncrypted: (entry) => (entry.kind === 'group' ? Promise.resolve(false) : base.isEncrypted(entry)),
+  };
+  return reg;
 }

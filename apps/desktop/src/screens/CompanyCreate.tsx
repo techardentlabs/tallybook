@@ -7,6 +7,7 @@ import { useNav } from '../nav.tsx';
 import { Gateway } from './Gateway.tsx';
 import { isValidGstin } from '@tallybook/core';
 import { currentCompanyEntry, loadCompanyIndex, noteCompanyOpened, shutCompany } from '../db/companies.ts';
+import { GroupCompanyForm } from './GroupCompany.tsx';
 
 function defaultFyStart(): string {
   const t = todayIso();
@@ -83,19 +84,23 @@ export function CompanyCreate() {
     noPeriod: true,
     keys: {
       'Ctrl+A': () => void create(),
+      'Alt+R': () => nav.push(<GroupCompanyForm />),
       Escape: () => {
         if (!others || nav.depth > 1) return false;
         void shutCompany().catch((e) => toast((e as Error).message, 'err'));
       },
     },
-    buttons: [{ key: 'Ctrl+A', label: 'Accept', run: () => void create() }],
+    buttons: [
+      { key: 'Alt+R', label: 'Group Company', run: () => nav.push(<GroupCompanyForm />) },
+      { key: 'Ctrl+A', label: 'Accept', run: () => void create() },
+    ],
   });
 
   return (
     <div className="max-w-3xl border border-tb-line bg-tb-paper p-4">
       <h3 className="mb-3 text-[15px] font-semibold">Company Creation</h3>
       <Form ref={form} fields={fields} onDone={() => void create()} />
-      <p className="mt-4 text-xs text-tb-muted">Enter moves to the next field. Ctrl+A accepts.</p>
+      <p className="mt-4 text-xs text-tb-muted">Enter moves to the next field. Ctrl+A accepts. Alt+R creates a Group Company from existing companies.</p>
     </div>
   );
 }

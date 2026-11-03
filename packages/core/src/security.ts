@@ -1,4 +1,6 @@
 import { CoreError, one, type Db, type Stmt } from './db.ts';
+import { fmtDate, todayIso } from './util.ts';
+import { SECURITY_FACILITIES, baseFacilityOf, facilityChain, facilityKind, voucherFacilities, type ScreenRight } from './facilities.ts';
 
 export const SECURITY_SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS security_settings (
@@ -48,102 +50,108 @@ export const SECURITY_SCHEMA: string[] = [
   )`,
 ];
 
+const LEVEL_MIGRATIONS: [string, string][] = [
+  ['shut_on_idle', 'ALTER TABLE security_levels ADD COLUMN shut_on_idle INTEGER NOT NULL DEFAULT 0'],
+  ['idle_minutes', 'ALTER TABLE security_levels ADD COLUMN idle_minutes INTEGER NOT NULL DEFAULT 0'],
+  ['whatsapp_nos', 'ALTER TABLE security_levels ADD COLUMN whatsapp_nos INTEGER NOT NULL DEFAULT 1'],
+];
+
 export async function ensureSecurity(db: Db): Promise<void> {
   await db.batch(SECURITY_SCHEMA.map((sql) => ({ sql })));
+  const have = new Set((await db.select<{ name: string }>("SELECT name FROM pragma_table_info('security_levels')")).map((r) => r.name));
+  const todo = LEVEL_MIGRATIONS.filter(([c]) => !have.has(c));
+  if (todo.length) await db.batch(todo.map(([, sql]) => ({ sql })));
 }
 
 export const SECURITY_ROLES = ['Owner', 'Data Entry', 'Tally.NET Auditor', 'Tally.NET Owner', 'Tally.NET User'] as const;
 export type SecurityRole = (typeof SECURITY_ROLES)[number];
 
-export const SECURITY_FACILITIES = [
-  'Accounting Vouchers',
-  'Accounts Masters',
-  'Alter Voucher Bank Allocations',
-  'Attendance Vouchers',
-  'Audit Listings',
-  'Back Dated Vouchers',
-  'Balance Sheet',
-  'Bank Books',
-  'Cash Books',
-  'Cash Flow',
-  'Cheque Printing',
-  'Cheque Register',
-  'Company Features',
-  'Cost Centre Details',
-  'Data Analysis',
-  'Day Book',
-  'Funds Flow',
-  'Group Monthly Summary',
-  'Group Summary',
-  'Inventory Masters',
-  'Inventory Vouchers',
-  'Location-Wise Summary',
-  'Outstandings',
-  'Override Invoice Defaults',
-  'Payroll Masters',
-  'Payroll Reports',
-  'Price List',
-  'Profit & Loss A/c',
-  'Stock Category Summary',
-  'Stock Summary',
-  'Trial Balance',
-  'Vouchers',
-  'Vouching Done',
-  'Voucher Verification',
-] as const;
-
 export type Facility = string;
 
-export type AccessName = 'Full Access' | 'Create/Alter' | 'Create' | 'Alter' | 'Display/Print' | 'Display' | 'None';
-export type Right = 'display' | 'create' | 'alter' | 'delete';
+export const ACCESS_DENIED = 'No Access Allowed!';
 
-export const ACCESS_NAMES: AccessName[] = ['Full Access', 'Create/Alter', 'Create', 'Alter', 'Display/Print', 'Display'];
+export type AccessName = 'Full Access' | 'Create/Alter' | 'Create' | 'Alter' | 'Display/Print' | 'Print' | 'Display' | 'Preview' | 'None';
+export type Right = ScreenRight;
+
+export const ACCESS_NAMES: AccessName[] = ['Full Access', 'Create', 'Alter', 'Create/Alter', 'Display', 'Print', 'Display/Print', 'Preview'];
 
 const ACCESS_RIGHTS: Record<AccessName, Right[]> = {
-  'Full Access': ['display', 'create', 'alter', 'delete'],
-  'Create/Alter': ['display', 'create', 'alter'],
-  Create: ['display', 'create'],
-  Alter: ['display', 'alter'],
-  'Display/Print': ['display'],
+  'Full Access': ['display', 'preview', 'print', 'create', 'alter', 'delete'],
+  'Create/Alter': ['display', 'preview', 'print', 'create', 'alter'],
+  Create: ['display', 'preview', 'print', 'create'],
+  Alter: ['display', 'preview', 'print', 'alter'],
+  'Display/Print': ['display', 'preview', 'print'],
+  Print: ['display', 'preview', 'print'],
   Display: ['display'],
+  Preview: ['display', 'preview'],
   None: [],
 };
 
-const DATA_ENTRY_DISALLOWED = new Set<string>([
-  'Accounts Masters',
-  'Balance Sheet',
-  'Cash Flow',
-  'Company Features',
-  'Cost Centre Details',
-  'Funds Flow',
-  'Group Monthly Summary',
-  'Group Summary',
-  'Inventory Masters',
-  'Location-Wise Summary',
-  'Outstandings',
-  'Payroll Masters',
-  'Profit & Loss A/c',
-  'Stock Category Summary',
-  'Stock Summary',
-  'Trial Balance',
-  'Vouching Done',
-  'Data Analysis',
-  'Voucher Verification',
-  'Payroll Reports',
-  'Price List',
-  'Override Invoice Defaults',
-  'Back Dated Vouchers',
-  'Audit Listings',
+const DISALLOW_RIGHTS: Record<AccessName, Right[]> = {
+  'Full Access': ['display', 'preview', 'print', 'create', 'alter', 'delete'],
+  'Create/Alter': ['create', 'alter', 'delete'],
+  Create: ['create'],
+  Alter: ['alter', 'delete'],
+  'Display/Print': ['display', 'preview', 'print', 'create', 'alter', 'delete'],
+  Print: ['print'],
+  Display: ['display', 'preview', 'print', 'create', 'alter', 'delete'],
+  Preview: ['preview', 'print'],
+  None: [],
+};
+
+export function accessRights(a: AccessName): Right[] {
+  return [...(ACCESS_RIGHTS[a] ?? [])];
+}
+
+export function accessNamesFor(facility: Facility): AccessName[] {
+  const k = facilityKind(facility);
+  if (k === 'Masters' || k === 'Vouchers' || k === 'Voucher Types' || k === null) return ACCESS_NAMES;
+  if (k === 'Utilities' || k === 'Company') return ['Full Access', 'Display'];
+  return ['Full Access', 'Display', 'Print', 'Display/Print', 'Preview'];
+}
+
+const DATA_ENTRY_VIEW = new Set<string>([
+  'Day Book',
+  'Cash/Bank Books',
+  'Ledger',
+  'Sales Register',
+  'Purchase Register',
+  'Journal Register',
+  'Payment Register',
+  'Receipt Register',
+  'Contra Register',
+  'Credit Note Register',
+  'Debit Note Register',
+  'Alter Voucher Bank Allocations',
+  'Bank Reconciliation',
+  'Cheque Printing',
+  'Cheque Register',
+  'Deposit Slip',
+  'Payment Advice',
+  'Post-Dated Summary',
+  'Stock Query',
+  'Order Outstandings',
+  'Bills Pending',
+  'Configuration',
+  'Print',
+  'E-Mail',
+  'WhatsApp',
 ]);
 
-const VOUCHER_FACILITIES = new Set<string>(['Vouchers', 'Accounting Vouchers', 'Inventory Vouchers', 'Attendance Vouchers', 'Alter Voucher Bank Allocations']);
+const OWNER_RESERVED = new Set<string>(['Audit Listings', 'Company Alteration']);
+const AUDITOR_NONE = new Set<string>(['Company Features', 'Company Alteration', 'Security Control', 'Backup', 'Restore', 'Import', 'Split Company Data', 'Repair', 'Data Synchronisation']);
 
 export function baseAccess(role: SecurityRole | string, facility: Facility): AccessName {
-  if (role === 'Owner' || role === 'Tally.NET Owner') return 'Full Access';
-  if (role === 'Tally.NET Auditor') return facility === 'Company Features' ? 'None' : 'Display/Print';
-  if (VOUCHER_FACILITIES.has(facility)) return 'Create/Alter';
-  if (DATA_ENTRY_DISALLOWED.has(facility)) return 'None';
-  return 'Display/Print';
+  const f = baseFacilityOf(facility);
+  if (role === 'Owner' || role === 'Tally.NET Owner') return OWNER_RESERVED.has(f) ? 'None' : 'Full Access';
+  if (role === 'Tally.NET Auditor') {
+    if (f === 'Audit Listings') return 'Full Access';
+    return AUDITOR_NONE.has(f) ? 'None' : 'Display/Print';
+  }
+  const k = facilityKind(f);
+  if (k === null) return 'Display/Print';
+  if (k === 'Vouchers') return f === 'Back Dated Vouchers' ? 'None' : 'Create/Alter';
+  return DATA_ENTRY_VIEW.has(f) ? 'Display/Print' : 'None';
 }
 
 export interface SecurityLevel {
@@ -154,14 +162,23 @@ export interface SecurityLevel {
   cutoff_date: string | null;
   save_views: boolean;
   delete_views: boolean;
+  whatsapp_nos: boolean;
   print_rules: boolean;
   override_tax: boolean;
   exclude_on_account: boolean;
   exclude_new_number: boolean;
   allow_connect: boolean;
   tallynet_auth: boolean;
-  disallow: Facility[];
+  shut_on_idle: boolean;
+  idle_minutes: number;
+  disallow: Record<Facility, AccessName>;
   allow: Record<Facility, AccessName>;
+}
+
+function normDisallow(d: Facility[] | Record<Facility, AccessName> | undefined): Record<Facility, AccessName> {
+  if (!d) return {};
+  if (Array.isArray(d)) return Object.fromEntries(d.map((f) => [f, 'Full Access' as AccessName]));
+  return { ...d };
 }
 
 interface LevelRow {
@@ -172,12 +189,15 @@ interface LevelRow {
   cutoff_date: string | null;
   save_views: number;
   delete_views: number;
+  whatsapp_nos: number;
   print_rules: number;
   override_tax: number;
   exclude_on_account: number;
   exclude_new_number: number;
   allow_connect: number;
   tallynet_auth: number;
+  shut_on_idle: number;
+  idle_minutes: number;
   disallow: string;
   allow: string;
 }
@@ -191,13 +211,16 @@ function toLevel(r: LevelRow): SecurityLevel {
     cutoff_date: r.cutoff_date,
     save_views: !!r.save_views,
     delete_views: !!r.delete_views,
+    whatsapp_nos: !!(r.whatsapp_nos ?? 1),
     print_rules: !!r.print_rules,
     override_tax: !!r.override_tax,
     exclude_on_account: !!r.exclude_on_account,
     exclude_new_number: !!r.exclude_new_number,
     allow_connect: !!r.allow_connect,
     tallynet_auth: !!r.tallynet_auth,
-    disallow: JSON.parse(r.disallow) as Facility[],
+    shut_on_idle: !!r.shut_on_idle,
+    idle_minutes: r.idle_minutes ?? 0,
+    disallow: normDisallow(JSON.parse(r.disallow) as Facility[] | Record<Facility, AccessName>),
     allow: JSON.parse(r.allow) as Record<Facility, AccessName>,
   };
 }
@@ -207,6 +230,7 @@ export interface SecurityUser {
   username: string;
   role: SecurityRole;
   level: SecurityLevel;
+  administrator: boolean;
   active: boolean;
   browser_access: boolean;
   remote_access: boolean;
@@ -232,12 +256,13 @@ interface UserRow {
   password_changed_at: string | null;
 }
 
-function toUser(r: UserRow, level: SecurityLevel): SecurityUser {
+function toUser(r: UserRow, level: SecurityLevel, admin: string | null): SecurityUser {
   return {
     id: r.id,
     username: r.username,
     role: r.role as SecurityRole,
     level,
+    administrator: admin !== null && admin.toLowerCase() === r.username.toLowerCase(),
     active: !!r.active,
     browser_access: !!r.browser_access,
     remote_access: !!r.remote_access,
@@ -367,12 +392,15 @@ export const SECURITY_ATTRIBUTE_DEFAULTS = {
   cutoff_date: null as string | null,
   save_views: true,
   delete_views: true,
+  whatsapp_nos: true,
   print_rules: false,
   override_tax: false,
   exclude_on_account: false,
   exclude_new_number: false,
   allow_connect: true,
   tallynet_auth: false,
+  shut_on_idle: false,
+  idle_minutes: 0,
 };
 
 export interface LevelInput {
@@ -382,46 +410,70 @@ export interface LevelInput {
   cutoff_date?: string | null;
   save_views?: boolean;
   delete_views?: boolean;
+  whatsapp_nos?: boolean;
   print_rules?: boolean;
   override_tax?: boolean;
   exclude_on_account?: boolean;
   exclude_new_number?: boolean;
   allow_connect?: boolean;
   tallynet_auth?: boolean;
-  disallow?: Facility[];
+  shut_on_idle?: boolean;
+  idle_minutes?: number;
+  disallow?: Facility[] | Record<Facility, AccessName>;
   allow?: Record<Facility, AccessName>;
 }
+
+const LEVEL_FIELDS = [
+  'basis',
+  'days_back',
+  'cutoff_date',
+  'save_views',
+  'delete_views',
+  'whatsapp_nos',
+  'print_rules',
+  'override_tax',
+  'exclude_on_account',
+  'exclude_new_number',
+  'allow_connect',
+  'tallynet_auth',
+  'shut_on_idle',
+  'idle_minutes',
+  'disallow',
+  'allow',
+] as const;
 
 function levelParams(i: LevelInput): (string | number | null)[] {
   const d = SECURITY_ATTRIBUTE_DEFAULTS;
   const b = (v: boolean | undefined, def: boolean) => ((v ?? def) ? 1 : 0);
   return [
-    i.name,
     i.basis,
     i.days_back ?? d.days_back,
     i.cutoff_date ?? null,
     b(i.save_views, d.save_views),
-    b(i.delete_views, d.delete_views),
+    b(i.save_views ?? d.save_views ? i.delete_views : false, d.delete_views),
+    b(i.whatsapp_nos, d.whatsapp_nos),
     b(i.print_rules, d.print_rules),
     b(i.override_tax, d.override_tax),
     b(i.exclude_on_account, d.exclude_on_account),
     b(i.exclude_new_number, d.exclude_new_number),
     b(i.allow_connect, d.allow_connect),
     b(i.tallynet_auth, d.tallynet_auth),
-    JSON.stringify(i.disallow ?? []),
+    b(i.shut_on_idle, d.shut_on_idle),
+    i.shut_on_idle ? i.idle_minutes ?? d.idle_minutes : 0,
+    JSON.stringify(normDisallow(i.disallow)),
     JSON.stringify(i.allow ?? {}),
   ];
 }
-
-const LEVEL_COLS =
-  'name, basis, days_back, cutoff_date, save_views, delete_views, print_rules, override_tax, exclude_on_account, exclude_new_number, allow_connect, tallynet_auth, disallow, allow';
 
 function validateLevel(i: LevelInput): void {
   if (!i.name.trim()) throw new CoreError('invalid', 'Name of security level is required');
   if (!SECURITY_ROLES.includes(i.basis)) throw new CoreError('invalid', `Unknown user role ${i.basis}`);
   if (i.days_back !== undefined && (!Number.isInteger(i.days_back) || i.days_back < 0)) throw new CoreError('invalid', 'Days allowed for back dated vouchers must be 0 or more');
   if (i.cutoff_date && !/^\d{4}-\d{2}-\d{2}$/.test(i.cutoff_date)) throw new CoreError('invalid', 'Cut-off date must be an ISO date');
-  for (const a of Object.values(i.allow ?? {})) if (!(a in ACCESS_RIGHTS)) throw new CoreError('invalid', `Unknown access ${a}`);
+  if (i.idle_minutes !== undefined && (!Number.isInteger(i.idle_minutes) || i.idle_minutes < 0)) throw new CoreError('invalid', 'Time for auto lock must be 0 or more minutes');
+  if (i.shut_on_idle && !(i.idle_minutes && i.idle_minutes > 0)) throw new CoreError('invalid', 'Set Time (in mins) for auto lock must be more than 0');
+  const all = [...Object.values(normDisallow(i.disallow)), ...Object.values(i.allow ?? {})];
+  for (const a of all) if (!(a in ACCESS_RIGHTS) || a === 'None') throw new CoreError('invalid', `Unknown Type of Access ${a}`);
 }
 
 export async function securityLevels(db: Db): Promise<SecurityLevel[]> {
@@ -440,24 +492,37 @@ export async function saveSecurityLevel(db: Db, input: LevelInput): Promise<Secu
   const params = levelParams({ ...input, name });
   if (existing) {
     await db.batch([
-      {
-        sql: `UPDATE security_levels SET basis=?, days_back=?, cutoff_date=?, save_views=?, delete_views=?, print_rules=?, override_tax=?, exclude_on_account=?, exclude_new_number=?, allow_connect=?, tallynet_auth=?, disallow=?, allow=? WHERE id = ?`,
-        params: [...params.slice(1), existing.id],
-      },
+      { sql: `UPDATE security_levels SET ${LEVEL_FIELDS.map((f) => `${f}=?`).join(', ')} WHERE id = ?`, params: [...params, existing.id] },
       { sql: 'UPDATE security_users SET role = ? WHERE level_id = ?', params: [input.basis, existing.id] },
     ]);
   } else {
     const id = await nextId(db, 'security_levels');
-    await db.batch([{ sql: `INSERT INTO security_levels (id, ${LEVEL_COLS}) VALUES (?${', ?'.repeat(14)})`, params: [id, ...params] }]);
+    await db.batch([{ sql: `INSERT INTO security_levels (id, name, ${LEVEL_FIELDS.join(', ')}) VALUES (?, ?${', ?'.repeat(LEVEL_FIELDS.length)})`, params: [id, name, ...params] }]);
   }
   return (await securityLevel(db, name))!;
 }
 
-export function effectiveAccess(level: SecurityLevel, facility: Facility): Set<Right> {
-  let rights = new Set<Right>(ACCESS_RIGHTS[baseAccess(level.basis, facility)]);
-  if (level.disallow.includes(facility)) rights = new Set();
+function applyLevel(level: SecurityLevel, facility: Facility, rights: Set<Right>): Set<Right> {
+  const denied = level.disallow[facility];
+  let out = rights;
+  if (denied) {
+    out = new Set(rights);
+    for (const r of DISALLOW_RIGHTS[denied] ?? []) out.delete(r);
+    if (!out.has('display')) out = new Set();
+  }
   const allowed = level.allow[facility];
-  if (allowed) for (const r of ACCESS_RIGHTS[allowed]) rights.add(r);
+  if (allowed) {
+    out = new Set(out);
+    for (const r of ACCESS_RIGHTS[allowed] ?? []) out.add(r);
+  }
+  return out;
+}
+
+export function effectiveAccess(level: SecurityLevel, facility: Facility, chain: string[] = facilityChain(facility)): Set<Right> {
+  const k = facilityKind(facility);
+  const baseOf = chain.length > 1 && (k === null || k === 'Voucher Types') ? chain[chain.length - 2] : facility;
+  let rights = new Set<Right>(ACCESS_RIGHTS[baseAccess(level.basis, baseOf)]);
+  for (const f of chain) rights = applyLevel(level, f, rights);
   return rights;
 }
 
@@ -468,7 +533,9 @@ export function accessName(rights: Set<Right>): AccessName {
   if (has('create') && has('alter')) return 'Create/Alter';
   if (has('create')) return 'Create';
   if (has('alter')) return 'Alter';
-  return 'Display/Print';
+  if (has('print')) return 'Display/Print';
+  if (has('preview')) return 'Preview';
+  return 'Display';
 }
 
 export interface SecurityControlRow {
@@ -490,7 +557,7 @@ export function builtinLevels(): SecurityLevel[] {
     basis: role,
     ...SECURITY_ATTRIBUTE_DEFAULTS,
     tallynet_auth: role.startsWith('Tally.NET'),
-    disallow: [],
+    disallow: {},
     allow: {},
   }));
 }
@@ -506,20 +573,57 @@ function parseAction(a: Action): { facility: Facility; right: Right } {
 export function can(user: SecurityUser | null, action: Action): boolean {
   if (!user) return true;
   if (!user.active) return false;
+  if (user.administrator) return true;
   const { facility, right } = parseAction(action);
   return effectiveAccess(user.level, facility).has(right);
 }
 
-export function canEnterOn(user: SecurityUser | null, date: string, today: string): boolean {
-  if (!user || date >= today) return true;
-  if (can(user, 'Back Dated Vouchers.create')) return true;
+export function canVoucher(user: SecurityUser | null, typeName: string, parent: string | undefined, right: Right): boolean {
+  if (!user) return true;
+  if (!user.active) return false;
+  if (user.administrator) return true;
+  const chain = voucherFacilities(typeName, parent);
+  return effectiveAccess(user.level, typeName, chain).has(right);
+}
+
+function addDays(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+export function backDatedLimit(user: SecurityUser | null, today: string, lastEntry?: string | null, right: Right = 'create'): string | null | false {
+  if (!user || user.administrator) return null;
+  if (can(user, { facility: 'Back Dated Vouchers', right })) return null;
+  const base = lastEntry || today;
   const days = user.level.days_back;
-  if (days <= 0) return false;
-  const limit = new Date(`${today}T00:00:00Z`);
-  limit.setUTCDate(limit.getUTCDate() - days);
-  const earliest = limit.toISOString().slice(0, 10);
-  if (date < earliest) return false;
-  return !user.level.cutoff_date || date >= user.level.cutoff_date;
+  const cut = user.level.cutoff_date;
+  const fromDays = days > 0 ? addDays(base, -days) : null;
+  if (!fromDays && !cut) return false;
+  if (!fromDays) return cut!;
+  if (!cut) return fromDays;
+  return fromDays > cut ? fromDays : cut;
+}
+
+export function canEnterOn(user: SecurityUser | null, date: string, today: string, lastEntry?: string | null, right: Right = 'create'): boolean {
+  if (!user) return true;
+  const base = lastEntry || today;
+  if (date >= base) return true;
+  const limit = backDatedLimit(user, today, lastEntry, right);
+  if (limit === null) return true;
+  if (limit === false) return false;
+  return date >= limit;
+}
+
+export function backDatedMessage(user: SecurityUser | null, date: string, today: string, lastEntry?: string | null, right: Right = 'create'): string | null {
+  if (canEnterOn(user, date, today, lastEntry, right)) return null;
+  const limit = backDatedLimit(user, today, lastEntry, right);
+  return limit ? `${ACCESS_DENIED} Back dated vouchers before ${fmtDate(limit)} are not allowed` : `${ACCESS_DENIED} Back dated vouchers are not allowed`;
+}
+
+export function idleLockMinutes(user: SecurityUser | null): number | null {
+  if (!user || !user.level.shut_on_idle || user.level.idle_minutes <= 0) return null;
+  return user.level.idle_minutes;
 }
 
 let current: SecurityUser | null = null;
@@ -543,17 +647,106 @@ export function canCurrent(action: Action): boolean {
   return can(current, action);
 }
 
+export function canAllCurrent(actions: readonly Action[] | null | undefined): boolean {
+  return !actions || actions.every((a) => can(current, a));
+}
+
+type Guardable = { db: Db } & Record<string, unknown>;
+const GUARDED = new WeakSet<object>();
+
+const MASTER_METHODS: Record<string, Right> = {
+  createLedger: 'create',
+  updateLedger: 'alter',
+  deleteLedger: 'delete',
+  createGroup: 'create',
+  updateGroup: 'alter',
+  deleteGroup: 'delete',
+  createVoucherType: 'create',
+  updateVoucherType: 'alter',
+};
+
+async function voucherTypeOf(db: Db, typeId: unknown): Promise<{ name: string; parent: string } | undefined> {
+  return one<{ name: string; parent: string }>(db, 'SELECT name, parent FROM voucher_types WHERE id = ?', [Number(typeId)]);
+}
+
+async function voucherOf(db: Db, id: unknown): Promise<{ date: string; name: string; parent: string } | undefined> {
+  return one<{ date: string; name: string; parent: string }>(db, 'SELECT v.date, t.name, t.parent FROM vouchers v JOIN voucher_types t ON t.id = v.type_id WHERE v.id = ?', [Number(id)]);
+}
+
+async function lastEntryDate(db: Db): Promise<string | null> {
+  return (await one<{ d: string | null }>(db, 'SELECT MAX(date) AS d FROM vouchers'))?.d ?? null;
+}
+
+export async function voucherDenial(
+  db: Db,
+  user: SecurityUser | null,
+  op: { right: Right; type?: { name: string; parent: string }; dates: string[]; today?: string }
+): Promise<string | null> {
+  if (!user) return null;
+  if (op.type && !canVoucher(user, op.type.name, op.type.parent, op.right)) return ACCESS_DENIED;
+  const today = op.today ?? todayIso();
+  const last = await lastEntryDate(db);
+  for (const d of op.dates) {
+    const m = d ? backDatedMessage(user, d, today, last, op.right) : null;
+    if (m) return m;
+  }
+  return null;
+}
+
+export function guardBooks(books: object, user: () => SecurityUser | null = currentUser): void {
+  if (GUARDED.has(books)) return;
+  GUARDED.add(books);
+  const b = books as Guardable;
+  const wrap = (method: string, check: (args: unknown[]) => Promise<string | null>) => {
+    const orig = b[method];
+    if (typeof orig !== 'function') return;
+    b[method] = async (...args: unknown[]) => {
+      const denial = await check(args);
+      if (denial) throw new CoreError('invalid', denial);
+      return (orig as (...a: unknown[]) => unknown).apply(books, args);
+    };
+  };
+  for (const [method, right] of Object.entries(MASTER_METHODS)) wrap(method, async () => (can(user(), { facility: 'Accounts Masters', right }) ? null : ACCESS_DENIED));
+  wrap('createVoucher', async ([input]) => {
+    const u = user();
+    if (!u) return null;
+    const i = input as { type_id?: number; date?: string };
+    return voucherDenial(b.db, u, { right: 'create', type: await voucherTypeOf(b.db, i.type_id), dates: [i.date ?? ''] });
+  });
+  wrap('updateVoucher', async ([id, input]) => {
+    const u = user();
+    if (!u) return null;
+    const cur = await voucherOf(b.db, id);
+    return voucherDenial(b.db, u, { right: 'alter', type: cur, dates: [cur?.date ?? '', (input as { date?: string })?.date ?? ''] });
+  });
+  for (const [method, right] of [['deleteVoucher', 'delete'], ['cancelVoucher', 'alter']] as const) {
+    wrap(method, async ([id]) => {
+      const u = user();
+      if (!u) return null;
+      const cur = await voucherOf(b.db, id);
+      return voucherDenial(b.db, u, { right, type: cur, dates: [cur?.date ?? ''] });
+    });
+  }
+}
+
+export async function administrator(db: Db): Promise<string | null> {
+  const set = await setting(db, 'admin');
+  if (set) return set;
+  return (await one<{ username: string }>(db, "SELECT username FROM security_users WHERE role = 'Owner' ORDER BY id LIMIT 1"))?.username ?? null;
+}
+
 async function loadUser(db: Db, where: string, params: (string | number)[]): Promise<SecurityUser | undefined> {
   const r = await one<UserRow>(db, `SELECT * FROM security_users WHERE ${where}`, params);
   if (!r) return undefined;
   const level = toLevel((await one<LevelRow>(db, 'SELECT * FROM security_levels WHERE id = ?', [r.level_id]))!);
-  return toUser(r, level);
+  return toUser(r, level, await administrator(db));
 }
 
 export async function securityUsers(db: Db): Promise<SecurityUser[]> {
   const rows = await db.select<UserRow>('SELECT * FROM security_users ORDER BY id');
   const levels = new Map((await securityLevels(db)).map((l) => [l.id, l]));
-  return rows.map((r) => toUser(r, levels.get(r.level_id)!));
+  const admin = await administrator(db);
+  return rows.map((r) => toUser(r, levels.get(r.level_id)!, admin));
 }
 
 export interface UserInput {
@@ -630,6 +823,7 @@ export async function removeUser(db: Db, username: string): Promise<void> {
   if (!u) throw new CoreError('not_found', 'User not found');
   const owners = (await securityUsers(db)).filter((x) => x.role === 'Owner' && x.username !== u.username);
   if (u.role === 'Owner' && owners.length === 0) throw new CoreError('conflict', 'The last Owner cannot be removed');
+  if (u.administrator) throw new CoreError('conflict', 'The Administrator cannot be removed');
   await db.batch([
     { sql: 'DELETE FROM security_users WHERE id = ?', params: [u.id] },
     { sql: 'DELETE FROM security_levels WHERE id = ?', params: [u.level.id] },
@@ -640,9 +834,9 @@ export async function enableSecurity(db: Db, admin: { username: string; password
   if (await securityEnabled(db)) throw new CoreError('conflict', 'Security is already enabled for this company');
   if (!admin.username.trim()) throw new CoreError('invalid', 'Administrator username is required');
   if (!admin.password) throw new CoreError('invalid', 'Administrator password is required');
-  const user = await saveUser(db, { username: admin.username, role: 'Owner', password: admin.password, policy_applies: false, today: admin.today });
-  await db.batch([putSetting('enabled', '1')]);
-  return user;
+  await saveUser(db, { username: admin.username, role: 'Owner', password: admin.password, policy_applies: false, today: admin.today });
+  await db.batch([putSetting('enabled', '1'), putSetting('admin', admin.username.trim())]);
+  return (await loadUser(db, 'username = ?', [admin.username.trim()]))!;
 }
 
 export async function disableSecurity(db: Db, actor: SecurityUser | null): Promise<void> {
@@ -650,7 +844,7 @@ export async function disableSecurity(db: Db, actor: SecurityUser | null): Promi
   await db.batch([
     { sql: 'DELETE FROM security_users' },
     { sql: 'DELETE FROM security_levels' },
-    { sql: "DELETE FROM security_settings WHERE key = 'enabled'" },
+    { sql: "DELETE FROM security_settings WHERE key IN ('enabled', 'admin')" },
   ]);
 }
 
@@ -819,3 +1013,4 @@ export function sortedCompanyRefs(list: CompanyList): CompanyRef[] {
 }
 
 export * from './companies.ts';
+export * from './facilities.ts';

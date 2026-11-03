@@ -9,7 +9,8 @@ import { MenuCard, useMenu, type MenuItem } from '../ui/Menu.tsx';
 import { quitApp } from '../quit.ts';
 import { hasUnsaved } from '../unsaved.ts';
 import { vault } from '../db/index.ts';
-import { createAnotherCompany, currentCompanyEntry, loadCompanyIndex, shutCompany, switchCompany } from '../db/companies.ts';
+import { createAnotherCompany, currentCompanyEntry, isGroupCompanyOpen, loadCompanyIndex, shutCompany, switchCompany } from '../db/companies.ts';
+import { GroupCompanyAlterList, GroupCompanyForm, GroupMembersReport } from './GroupCompany.tsx';
 import { CompanyAlter } from './Features.tsx';
 import { MiniForm, type MiniRow, type MiniValues } from './Login.tsx';
 import { SelectCompanyScreen, VAULT_WARNING } from './Security.tsx';
@@ -121,8 +122,19 @@ export function CompanyInfoMenu() {
     { label: 'Shut Company', run: () => void shut(), hotkey: 'H', hotAt: 1 },
     { label: '' },
     { label: 'Create Company', run: () => void createAnotherCompany().catch((e) => toast(errText(e), 'err')), hotkey: 'C' },
-    { label: 'Alter', run: () => (company ? nav.push(<CompanyAlter />) : toast('No company is open', 'err')), hotkey: 'A' },
-    { label: 'Change TallyVault', run: () => (company ? nav.push(<ChangeVaultScreen />) : toast('No company is open', 'err')), hotkey: 'V' },
+    { label: 'Create Group Company', run: () => nav.push(<GroupCompanyForm />), hotkey: 'G' },
+    {
+      label: 'Alter',
+      run: () => {
+        const cur = currentCompanyEntry();
+        if (cur && isGroupCompanyOpen()) return nav.push(<GroupCompanyForm alterId={cur.id} />);
+        return company ? nav.push(<CompanyAlter />) : toast('No company is open', 'err');
+      },
+      hotkey: 'A',
+    },
+    { label: 'Alter Group Company', run: () => nav.push(<GroupCompanyAlterList />), hotkey: 'L' },
+    ...(isGroupCompanyOpen() ? [{ label: 'Member Companies', run: () => nav.push(<GroupMembersReport />), hotkey: 'M' }] : []),
+    { label: 'Change TallyVault', run: () => (company && !isGroupCompanyOpen() ? nav.push(<ChangeVaultScreen />) : toast(company ? 'TallyVault is set for each member company' : 'No company is open', 'err')), hotkey: 'V' },
     { label: '' },
     {
       label: 'Quit',

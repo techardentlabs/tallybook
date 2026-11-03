@@ -1,3 +1,4 @@
+import { ORDER_PARENTS_SQL } from './schema.ts';
 import { CoreError, one, type Db } from './db.ts';
 import { QTY_SCALE, lineAmount, stockItem, stockItems, stockSummary, stockGroups, stockCategories, godowns, type StockItem } from './inventory.ts';
 
@@ -60,7 +61,7 @@ async function nextId(db: Db, table: string): Promise<number> {
 }
 
 const clean = (s: unknown, max = 100) => String(s ?? '').trim().slice(0, max);
-const ORDER_PARENTS = "('Sales Order', 'Purchase Order')";
+const ORDER_PARENTS = ORDER_PARENTS_SQL;
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
 export function daysBetween(a: string, b: string): number {

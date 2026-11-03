@@ -1,21 +1,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { fmtAmount, parseAmount, type Ledger, type VoucherType } from '@tallybook/core';
+import { fmtAmount, parseAmount, type Group, type Ledger, type VoucherType, jobWorkTypeOptions, saveJobWorkTypeOptions, type JobWorkTypeOptions } from '@tallybook/core';
 import {
+  ACCOUNTING_CALCS,
   CALC_LABELS,
+  INVOICE_CALCS,
+  INVOICE_CLASS_TYPES,
+  POS_MODES,
+  POS_MODE_GROUPS,
+  ROUND_LABELS,
   createVoucherClass,
   deleteVoucherClass,
   expandClass,
   fmtPercent,
+  invoiceCalcLabel,
   parsePercent,
+  partyIsDebit,
   setVoucherTypeOptions,
   updateVoucherClass,
   voucherClass,
   voucherClasses,
   voucherTypeOptions,
   type ClassCalc,
+  type ClassLine,
   type ClassLineInput,
   type ClassSection,
   type ExpandedEntry,
+  type PosMode,
+  type RoundMethod,
   type VoucherClass,
   type VoucherTypeOptions,
 } from '@tallybook/core';
@@ -23,21 +34,23 @@ import { useScreen } from '../registry.ts';
 import { useStore } from '../store.tsx';
 import { useNav } from '../nav.tsx';
 import { useDialogs } from '../ui/Dialogs.tsx';
-import { Form, type FieldDef, type FormHandle } from '../ui/Form.tsx';
+import { Form, type FieldDef, type FormHandle, type Values } from '../ui/Form.tsx';
 import type { Opt } from '../ui/PickerInput.tsx';
 import { SelectList } from './SelectList.tsx';
 import { EntryGrid, gridRow, type GridCol, type GridRow } from './EntryGrid.tsx';
+import { isUnder } from '../lib.ts';
 
-function useLedgers(): Ledger[] {
+function useLedgers(): { ledgers: Ledger[]; groups: Group[] } {
   const { books, version } = useStore();
-  const [l, setL] = useState<Ledger[]>([]);
+  const [l, setL] = useState<{ ledgers: Ledger[]; groups: Group[] }>({ ledgers: [], groups: [] });
   useEffect(() => {
-    void books.ledgers().then(setL);
+    void Promise.all([books.ledgers(), books.groups()]).then(([ledgers, groups]) => setL({ ledgers, groups }));
   }, [books, version]);
   return l;
 }
 
-const CALC_OPTS: Opt[] = (Object.keys(CALC_LABELS) as ClassCalc[]).map((k) => ({ id: k, label: CALC_LABELS[k] }));
+const calcOpts = (calcs: ClassCalc[], kind: string | null): Opt[] => calcs.map((k) => ({ id: k, label: kind ? invoiceCalcLabel(k, kind) : CALC_LABELS[k] }));
+const ROUND_OPTS: Opt[] = (['none', 'downward', 'normal', 'upward'] as RoundMethod[]).map((k) => ({ id: k, label: ROUND_LABELS[k] }));
 const SIDE_OPTS: Opt[] = [
   { id: 'Dr', label: 'Dr' },
   { id: 'Cr', label: 'Cr' },
@@ -46,11 +59,25 @@ const YES_NO: Opt[] = [
   { id: 1, label: 'Yes' },
   { id: 0, label: 'No' },
 ];
+const POS_LABELS: Record<PosMode, string> = {
+  gift: 'Gift Vouchers',
+  card: 'Credit / Debit Card Payment',
+  cheque: 'Cheque / DD',
+  cash: 'Cash',
+};
+const POS_KEY: Record<PosMode, 'gift_ledger_id' | 'card_ledger_id' | 'cheque_ledger_id' | 'cash_ledger_id'> = { gift: 'gift_ledger_id', card: 'card_ledger_id', cheque: 'cheque_ledger_id', cash: 'cash_ledger_id' };
 
 function valueText(calc: ClassCalc, value: number): string {
-  if (calc === 'percent') return fmtPercent(value);
-  if (calc === 'fixed') return fmtAmount(value);
+  if (calc === 'percent' || calc === 'subtotal') return fmtPercent(value);
+  if (calc === 'fixed' || calc === 'qty') return fmtAmount(value);
   return '';
+}
+
+interface Head {
+  name: string;
+  forex: boolean;
+  print_title: string;
+  pos: Partial<Record<PosMode, number | null>>;
 }
 
 export function VoucherClassForm({ typeId, id, initialName = '' }: { typeId: number; id?: number; initialName?: string }) {
@@ -58,10 +85,11 @@ export function VoucherClassForm({ typeId, id, initialName = '' }: { typeId: num
   const nav = useNav();
   const dialogs = useDialogs();
   const form = useRef<FormHandle>(null);
-  const ledgers = useLedgers();
+  const { ledgers, groups } = useLedgers();
+  const topts = useTypeOptions(typeId);
   const [type, setType] = useState<VoucherType | null>(null);
   const [cur, setCur] = useState<VoucherClass | null | undefined>(id ? undefined : null);
-  const [head, setHead] = useState<{ name: string; forex: boolean } | null>(null);
+  const [head, setHead] = useState<Head | null>(null);
   const [stage, setStage] = useState<ClassSection | null>(null);
   const [lines, setLines] = useState<ClassLineInput[]>([]);
 
@@ -70,9 +98,23 @@ export function VoucherClassForm({ typeId, id, initialName = '' }: { typeId: num
     if (id) void voucherClass(books.db, id).then(setCur);
   }, [books, id, typeId]);
 
-  const save = async (h: { name: string; forex: boolean }, ls: ClassLineInput[]) => {
+  const posType = type?.parent === 'Sales' && !!topts?.pos_invoicing;
+  const invoiceType = !!type && INVOICE_CLASS_TYPES.includes(type.parent);
+
+  const save = async (h: Head, ls: ClassLineInput[]) => {
     try {
-      const input = { type_id: typeId, name: h.name, forex_adjust: h.forex, lines: ls };
+      const input = {
+        type_id: typeId,
+        name: h.name,
+        forex_adjust: h.forex,
+        pos_class: posType,
+        print_title: h.print_title,
+        gift_ledger_id: h.pos.gift ?? null,
+        card_ledger_id: h.pos.card ?? null,
+        cheque_ledger_id: h.pos.cheque ?? null,
+        cash_ledger_id: h.pos.cash ?? null,
+        lines: ls,
+      };
       if (cur) await updateVoucherClass(books.db, cur.id, input);
       else await createVoucherClass(books.db, input);
       bump();
@@ -86,9 +128,11 @@ export function VoucherClassForm({ typeId, id, initialName = '' }: { typeId: num
   };
 
   const proceed = () => {
-    const v = form.current?.submit();
+    const v: Values | null = form.current?.submit() ?? null;
     if (!v) return;
-    const h = { name: String(v.name), forex: !!v.forex };
+    const pos: Head['pos'] = {};
+    if (posType) for (const m of POS_MODES) pos[m] = v[m] ? Number(v[`${m}_ledger`]) || null : null;
+    const h: Head = { name: String(v.name), forex: !!v.forex, print_title: posType ? String(v.print_title ?? '') : '', pos };
     setHead(h);
     setLines([]);
     setStage(h.forex ? 'forex' : 'default');
@@ -113,11 +157,34 @@ export function VoucherClassForm({ typeId, id, initialName = '' }: { typeId: num
     buttons: [{ key: 'Ctrl+A', label: 'Accept', run: proceed }, ...(cur ? [{ key: 'Alt+D', label: 'Delete', run: () => void remove() }] : [])],
   });
 
-  if (cur === undefined || !type) return null;
+  if (cur === undefined || !type || !topts) return null;
   const canForex = type.parent === 'Journal';
+  const ledgerOpt = (lid: number | null | undefined): Opt | undefined => {
+    const l = lid ? ledgers.find((x) => x.id === lid) : undefined;
+    return l ? { id: l.id, label: l.name, sub: l.group_name } : undefined;
+  };
+  const posFields: FieldDef[] = posType
+    ? [
+        { key: 'print_title', label: 'Default Print Title', kind: 'text', initial: cur?.print_title ?? '', maxLength: 100 },
+        ...POS_MODES.flatMap((m): FieldDef[] => [
+          { key: m, label: POS_LABELS[m], kind: 'toggle', initial: !!cur?.[POS_KEY[m]] },
+          {
+            key: `${m}_ledger`,
+            label: 'Ledger',
+            kind: 'picker',
+            title: 'List of Ledger Accounts',
+            required: true,
+            options: ledgers.filter((l) => isUnder(groups, l, POS_MODE_GROUPS[m])).map((l) => ({ id: l.id, label: l.name, sub: l.group_name })),
+            initial: ledgerOpt(cur?.[POS_KEY[m]]),
+            visible: (v) => !!v[m],
+          },
+        ]),
+      ]
+    : [];
   const fields: FieldDef[] = [
     { key: 'name', label: 'Class', kind: 'text', required: true, initial: cur?.name ?? initialName, maxLength: 60 },
     ...(canForex ? ([{ key: 'forex', label: 'Use Class for Forex Gain/Loss Adjustments', kind: 'toggle', initial: !!cur?.forex_adjust }] as FieldDef[]) : []),
+    ...posFields,
   ];
   const existing = (s: ClassSection) => (cur?.lines ?? []).filter((l) => l.section === s);
   const advance = (more: ClassLineInput[]) => {
@@ -136,6 +203,7 @@ export function VoucherClassForm({ typeId, id, initialName = '' }: { typeId: num
       {head?.name} <span className="text-xs font-normal">({type.name})</span>
     </div>
   );
+  if (!ledgers.length) return null;
 
   return (
     <div className="max-w-2xl">
@@ -156,59 +224,91 @@ export function VoucherClassForm({ typeId, id, initialName = '' }: { typeId: num
           onCancel={cancel}
         />
       )}
-      {(stage === 'default' || stage === 'additional') && head && <LineGrid key={stage} section={stage} ledgers={opts} initial={existing(stage)} heading={heading} onAccept={advance} onCancel={cancel} />}
+      {(stage === 'default' || stage === 'additional') && head && (
+        <LineGrid key={stage} section={stage} kind={invoiceType ? type.parent : null} ledgers={opts} initial={existing(stage)} heading={heading} onAccept={advance} onCancel={cancel} />
+      )}
     </div>
   );
 }
 
-function LineGrid({ section, ledgers, initial, heading, onAccept, onCancel }: { section: 'default' | 'additional'; ledgers: Opt[]; initial: { ledger: string; ledger_id: number; side: 'Dr' | 'Cr'; calc: ClassCalc; value: number; remove_if_zero: number }[]; heading: React.ReactNode; onAccept: (l: ClassLineInput[]) => void; onCancel: () => void }) {
+function LineGrid({ section, kind, ledgers, initial, heading, onAccept, onCancel }: { section: 'default' | 'additional'; kind: string | null; ledgers: Opt[]; initial: ClassLine[]; heading: React.ReactNode; onAccept: (l: ClassLineInput[]) => void; onCancel: () => void }) {
   const isDefault = section === 'default';
+  const invoice = !!kind;
+  const supplySide: 'Dr' | 'Cr' = kind && partyIsDebit(kind) ? 'Cr' : 'Dr';
+  const label = (c: ClassCalc) => (kind ? invoiceCalcLabel(c, kind) : CALC_LABELS[c]);
   const rows = initial.map((l) =>
     gridRow(
-      { ledger: l.ledger, side: l.side, calc: CALC_LABELS[l.calc], value: valueText(l.calc, l.value), rz: l.remove_if_zero ? 'Yes' : 'No' },
-      { ledger: l.ledger_id, side: l.side, calc: l.calc, rz: l.remove_if_zero }
+      { ledger: l.ledger, side: l.side, calc: label(l.calc), value: valueText(l.calc, l.value), rz: l.remove_if_zero ? 'Yes' : 'No', round: ROUND_LABELS[l.rounding ?? 'none'], limit: l.round_limit ? fmtAmount(l.round_limit) : '' },
+      { ledger: l.ledger_id, side: l.side, calc: l.calc, rz: l.remove_if_zero, round: l.rounding ?? 'none' }
     )
   );
-  const cols: GridCol[] = [
-    { key: 'ledger', label: 'Ledger Name', kind: 'picker', title: 'List of Ledger Accounts', options: ledgers },
-    { key: 'side', label: 'Dr/Cr', kind: 'picker', title: 'Dr/Cr', options: SIDE_OPTS, width: 70 },
-    { key: 'calc', label: 'Type of Calculation', kind: 'picker', title: 'Types of Calculation', options: CALC_OPTS, width: 190 },
-    { key: 'value', label: 'Percentage % / Value', kind: 'text', align: 'right', width: 130, visible: (r) => r.id.calc !== 'user' },
-    ...(isDefault ? [] : [{ key: 'rz', label: 'Remove if Zero ?', kind: 'picker' as const, title: 'Remove if Zero', options: YES_NO, width: 120 }]),
-  ];
+  const roundCols: GridCol[] = invoice
+    ? [
+        { key: 'round', label: 'Rounding Method', kind: 'picker', title: 'Rounding Methods', options: ROUND_OPTS, width: 170 },
+        { key: 'limit', label: 'Rounding Limit', kind: 'text', align: 'right', width: 110, visible: (r) => !!r.id.round && r.id.round !== 'none' },
+      ]
+    : [];
+  const cols: GridCol[] =
+    invoice && isDefault
+      ? [{ key: 'ledger', label: 'Ledger Name', kind: 'picker', title: 'List of Ledger Accounts', options: ledgers }, { key: 'value', label: 'Percentage', kind: 'text', align: 'right', width: 110 }, ...roundCols]
+      : [
+          { key: 'ledger', label: 'Ledger Name', kind: 'picker', title: 'List of Ledger Accounts', options: ledgers },
+          { key: 'side', label: 'Dr/Cr', kind: 'picker', title: 'Dr/Cr', options: SIDE_OPTS, width: 70 },
+          { key: 'calc', label: 'Type of Calculation', kind: 'picker', title: 'Types of Calculation', options: calcOpts(invoice ? INVOICE_CALCS : ACCOUNTING_CALCS, kind), width: 200 },
+          { key: 'value', label: 'Percentage % / Value', kind: 'text', align: 'right', width: 130, visible: (r) => r.id.calc !== 'user' && r.id.calc !== 'round' },
+          ...roundCols,
+          ...(isDefault ? [] : [{ key: 'rz', label: 'Remove if Zero ?', kind: 'picker' as const, title: 'Remove if Zero', options: YES_NO, width: 120 }]),
+        ];
+  const pctOf = (rs: GridRow[]) => rs.filter((r) => r.id.ledger).reduce((s, r) => s + (parsePercent(r.text.value ?? '') ?? 0), 0);
   const fresh = (rs: GridRow[]) => {
     const last = rs[rs.length - 1];
-    return gridRow({ side: last?.text.side ?? 'Cr', calc: last?.text.calc ?? CALC_LABELS.percent, rz: 'No' }, { side: last?.id.side ?? 'Cr', calc: last?.id.calc ?? 'percent', rz: 0 });
+    if (invoice && isDefault) {
+      const left = 10000 - pctOf(rs);
+      return gridRow({ value: left > 0 ? fmtPercent(left) : '', round: ROUND_LABELS.none }, { round: 'none' });
+    }
+    const side = invoice ? supplySide : last?.id.side ?? 'Cr';
+    return gridRow({ side: String(side), calc: last?.text.calc ?? label('percent'), rz: 'No', round: ROUND_LABELS.none }, { side, calc: last?.id.calc ?? 'percent', rz: 0, round: 'none' });
   };
+  const title = isDefault ? (invoice ? 'Default Accounting Allocations for each Item in Invoice' : 'Default Accounting Entries') : 'Additional Accounting Entries (e.g. Taxes / Other charges) to be added in Invoice';
   return (
     <EntryGrid
-      title={isDefault ? 'Default Accounting Entries' : 'Additional Accounting Entries (e.g. Taxes / Other charges) to be added in Invoice'}
+      title={title}
       heading={heading}
       cols={cols}
-      initial={rows}
+      initial={rows.length ? rows : invoice && isDefault ? [gridRow({ value: '100', round: ROUND_LABELS.none }, { round: 'none' })] : rows}
       fresh={fresh}
-      width={760}
+      width={invoice ? (isDefault ? 720 : 1040) : 760}
       validate={(all) => {
         const rs = all.filter((r) => r.id.ledger || (r.text.ledger ?? '').trim());
         for (const r of rs) {
           if (!r.id.ledger) return 'Ledger Name: choose from the list';
+          if (invoice && r.id.round && r.id.round !== 'none' && !parseAmount(r.text.limit ?? '')) return 'Enter the Rounding Limit';
+          if (invoice && isDefault) {
+            if (parsePercent(r.text.value ?? '') === null) return 'Enter a valid percentage';
+            continue;
+          }
           if (!r.id.side || !r.id.calc) return 'Choose Dr/Cr and Type of Calculation';
-          if (r.id.calc === 'percent' && parsePercent(r.text.value ?? '') === null) return 'Enter a valid percentage';
-          if (r.id.calc === 'fixed' && parseAmount(r.text.value ?? '') === null) return 'Enter a valid amount';
+          if ((r.id.calc === 'percent' || r.id.calc === 'subtotal') && parsePercent(r.text.value ?? '') === null) return 'Enter a valid percentage';
+          if ((r.id.calc === 'fixed' || r.id.calc === 'qty') && parseAmount(r.text.value ?? '') === null) return 'Enter a valid amount';
+          if (r.id.calc === 'round' && (!r.id.round || r.id.round === 'none')) return 'Choose a Rounding Method for As Total Amount Rounding';
         }
+        if (invoice && isDefault && rs.length && pctOf(rs) !== 10000) return 'Percentages must total 100%';
         return null;
       }}
       onAccept={(all) =>
         onAccept(
           all.filter((r) => r.id.ledger).map((r) => {
-            const calc = r.id.calc as ClassCalc;
+            const calc = (invoice && isDefault ? 'percent' : r.id.calc) as ClassCalc;
+            const round = (invoice ? r.id.round || 'none' : 'none') as RoundMethod;
             return {
               section,
               ledger_id: Number(r.id.ledger),
-              side: r.id.side === 'Cr' ? ('Cr' as const) : ('Dr' as const),
+              side: invoice && isDefault ? supplySide : r.id.side === 'Cr' ? ('Cr' as const) : ('Dr' as const),
               calc,
-              value: calc === 'percent' ? parsePercent(r.text.value ?? '') ?? 0 : calc === 'fixed' ? parseAmount(r.text.value ?? '') ?? 0 : 0,
+              value: calc === 'percent' || calc === 'subtotal' ? parsePercent(r.text.value ?? '') ?? 0 : calc === 'fixed' || calc === 'qty' ? parseAmount(r.text.value ?? '') ?? 0 : 0,
               remove_if_zero: !isDefault && Number(r.id.rz) === 1,
+              rounding: round,
+              round_limit: round === 'none' ? 0 : parseAmount(r.text.limit ?? '') ?? 0,
             };
           })
         )
@@ -302,10 +402,14 @@ export function VoucherTypeOptionsScreen({ typeId }: { typeId: number }) {
   const [newName, setNewName] = useState('');
   const refs = useRef<Record<string, HTMLInputElement | null>>({});
 
+  const [jw, setJw] = useState<JobWorkTypeOptions | null>(null);
   useEffect(() => {
     void books.voucherTypes().then((ts) => setType(ts.find((t) => t.id === typeId) ?? null));
     void voucherTypeOptions(books.db, typeId).then(setOpts);
   }, [books, typeId]);
+  useEffect(() => {
+    if (type && (type.parent === 'Material Out' || type.parent === 'Material In')) void jobWorkTypeOptions(books.db, typeId).then(setJw);
+  }, [books, type, typeId]);
 
   const save = useCallback(async () => {
     if (!opts) return;
@@ -313,13 +417,14 @@ export function VoucherTypeOptionsScreen({ typeId }: { typeId: number }) {
     void _t;
     try {
       await setVoucherTypeOptions(books.db, typeId, patch);
+      if (jw) await saveJobWorkTypeOptions(books.db, typeId, jw);
       bump();
       toast('Voucher type saved', 'ok');
       nav.pop();
     } catch (e) {
       toast((e as Error).message, 'err');
     }
-  }, [books, bump, nav, opts, toast, typeId]);
+  }, [books, bump, nav, opts, toast, typeId, jw]);
   const accept = useCallback(async () => {
     if (await dialogs.confirm('Accept ?', { title: 'Accept', yes: 'Yes', no: 'No', corner: true })) void save();
   }, [dialogs, save]);
@@ -328,7 +433,14 @@ export function VoucherTypeOptionsScreen({ typeId }: { typeId: number }) {
   const vis = (rows: OptRow[]) => (opts ? rows.filter((r) => !r.show || r.show(parent, opts)) : []);
   const general = vis(GENERAL);
   const printing = vis(PRINTING);
-  const order = [...general.map((r) => r.key as string), ...printing.map((r) => r.key as string), 'class'];
+  const jwRows = jw
+    ? ([
+        { key: 'use_for_job_work', label: 'Use for Job Work' },
+        ...(jw.use_for_job_work ? [{ key: 'use_for_job_work_in', label: 'Use for Job Work In' }] : []),
+        ...(parent === 'Material In' && !jw.use_for_job_work_in ? [{ key: 'allow_consumption', label: 'Allow consumption' }] : []),
+      ] as { key: 'use_for_job_work' | 'use_for_job_work_in' | 'allow_consumption'; label: string }[])
+    : [];
+  const order = [...general.map((r) => r.key as string), ...jwRows.map((r) => `jw_${r.key}`), ...printing.map((r) => r.key as string), 'class'];
   const go = (key: string, dir: 1 | -1) =>
     setTimeout(() => {
       const i = order.indexOf(key);
@@ -387,6 +499,34 @@ export function VoucherTypeOptionsScreen({ typeId }: { typeId: number }) {
       </div>
     );
   };
+  const jwField = (r: (typeof jwRows)[number]) => (
+    <div key={r.key} className="flex items-center">
+      <label className="flex-1 pr-1">{r.label}</label>
+      <span className="mr-1">:</span>
+      <input
+        ref={(el) => {
+          refs.current[`jw_${r.key}`] = el;
+        }}
+        className="tb-input w-36 font-bold"
+        readOnly
+        value={jw?.[r.key] ? 'Yes' : 'No'}
+        onKeyDown={(e) => {
+          if (/^[yYnN]$/.test(e.key) || e.key === ' ' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+            e.preventDefault();
+            setJw((o) => (o ? { ...o, [r.key]: /^[yY]$/.test(e.key) ? 1 : /^[nN]$/.test(e.key) ? 0 : o[r.key] ? 0 : 1 } : o));
+          } else if (e.key === 'Enter' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+            e.preventDefault();
+            e.stopPropagation();
+            go(`jw_${r.key}`, 1);
+          } else if (e.key === 'Backspace') {
+            e.preventDefault();
+            e.stopPropagation();
+            go(`jw_${r.key}`, -1);
+          }
+        }}
+      />
+    </div>
+  );
   const col = 'flex-1 border-l border-tb-line px-2 first:border-l-0';
   void company;
   return (
@@ -420,7 +560,7 @@ export function VoucherTypeOptionsScreen({ typeId }: { typeId: number }) {
             <span className="mr-1">:</span>
             <span className="w-36 px-1 font-bold">{type.is_active ? 'Yes' : 'No'}</span>
           </div>
-          <div className="mt-2 border-t border-tb-line pt-2">{general.map(field)}</div>
+          <div className="mt-2 border-t border-tb-line pt-2">{general.map(field)}{jwRows.map(jwField)}</div>
         </div>
         <div className={col}>
           <div className="py-2 text-center font-bold underline">Printing</div>

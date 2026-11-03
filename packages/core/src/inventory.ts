@@ -2,7 +2,7 @@ import { CoreError, one, type Db } from './db.ts';
 import { newGuid } from './util.ts';
 import type { Books, StockLineInput, VoucherRow } from './books.ts';
 import { planGstInvoice, type GstInvoicePlan } from './gst.ts';
-import { STOCK_ITEM_INT, STOCK_ITEM_TEXT, STOCK_VOUCHER_TYPES } from './schema.ts';
+import { JOB_WORK_TYPES, ORDER_PARENTS_SQL, STOCK_ITEM_INT, STOCK_ITEM_TEXT, STOCK_VOUCHER_TYPES } from './schema.ts';
 
 export interface Unit {
   id: number;
@@ -25,7 +25,11 @@ export interface Godown {
   id: number;
   name: string;
   parent_id: number | null;
+  third_party: number;
 }
+
+export const THIRD_PARTY_KINDS = ['Not Applicable', 'Our Stock with Third Party', 'Third Party Stock with Us'] as const;
+const OWN_GODOWNS = ' AND COALESCE(m.godown_id, 1) NOT IN (SELECT id FROM godowns WHERE third_party = 2)';
 export interface StockItem {
   id: number;
   guid: string;
@@ -103,7 +107,9 @@ export function ensureStockVoucherTypes(db: Db): Promise<boolean> {
 async function seedStockVoucherTypes(db: Db): Promise<boolean> {
   const have = new Set((await db.select<{ name: string }>('SELECT name FROM voucher_types')).map((r) => r.name.toLowerCase()));
   let id = ((await one<{ m: number }>(db, 'SELECT COALESCE(MAX(id), 0) AS m FROM voucher_types'))!.m) + 1;
-  const stmts = STOCK_VOUCHER_TYPES.filter((n) => !have.has(n.toLowerCase())).map((n) => ({
+  const jw = !!(await one<{ j: number }>(db, 'SELECT job_work_enabled AS j FROM company WHERE id = 1').catch(() => null))?.j;
+  const wanted = STOCK_VOUCHER_TYPES.filter((n) => jw || !(JOB_WORK_TYPES as readonly string[]).includes(n));
+  const stmts = wanted.filter((n) => !have.has(n.toLowerCase())).map((n) => ({
     sql: 'INSERT INTO voucher_types (id, guid, name, parent, is_system) VALUES (?, ?, ?, ?, 1)',
     params: [id++, newGuid(), n, n] as (string | number)[],
   }));
@@ -155,16 +161,25 @@ export async function createStockCategory(db: Db, input: { name: string; parent_
 
 export async function godowns(db: Db): Promise<Godown[]> {
   await ensureInventory(db);
-  return db.select<Godown>('SELECT id, name, parent_id FROM godowns ORDER BY id');
+  return db.select<Godown>('SELECT id, name, parent_id, third_party FROM godowns ORDER BY id');
 }
 
-export async function createGodown(db: Db, input: { name: string; parent_id?: number | null }): Promise<Godown> {
+export async function updateGodown(db: Db, id: number, input: { name: string; parent_id?: number | null; third_party?: number }): Promise<Godown> {
+  const name = clean(input.name);
+  if (!name) throw new CoreError('invalid', 'Name is required');
+  if (await one(db, 'SELECT 1 FROM godowns WHERE name = ? AND id <> ?', [name, id])) throw new CoreError('conflict', `"${name}" already exists`);
+  if (input.parent_id === id) throw new CoreError('invalid', 'A godown cannot be under itself');
+  await db.batch([{ sql: 'UPDATE godowns SET name = ?, parent_id = ?, third_party = ? WHERE id = ?', params: [name, input.parent_id ?? null, Math.min(2, Math.max(0, input.third_party ?? 0)), id] }]);
+  return (await one<Godown>(db, 'SELECT id, name, parent_id, third_party FROM godowns WHERE id = ?', [id]))!;
+}
+
+export async function createGodown(db: Db, input: { name: string; parent_id?: number | null; third_party?: number }): Promise<Godown> {
   await ensureInventory(db);
   const name = clean(input.name);
   if (!name) throw new CoreError('invalid', 'Name is required');
   if (await one(db, 'SELECT 1 FROM godowns WHERE name = ?', [name])) throw new CoreError('conflict', `"${name}" already exists`);
   const id = await nextId(db, 'godowns');
-  await db.batch([{ sql: 'INSERT INTO godowns (id, guid, name, parent_id) VALUES (?, ?, ?, ?)', params: [id, newGuid(), name, input.parent_id ?? null] }]);
+  await db.batch([{ sql: 'INSERT INTO godowns (id, guid, name, parent_id, third_party) VALUES (?, ?, ?, ?, ?)', params: [id, newGuid(), name, input.parent_id ?? null, Math.min(2, Math.max(0, input.third_party ?? 0))] }]);
   return (await one<Godown>(db, 'SELECT id, name, parent_id FROM godowns WHERE id = ?', [id]))!;
 }
 
@@ -316,7 +331,7 @@ export async function stockSummary(db: Db, from: string, to: string): Promise<{ 
   const items = await stockItems(db);
   const moves = await db.select<Move>(
     `SELECT m.item_id, v.date, m.qty, m.amount, t.parent FROM stock_movements m JOIN vouchers v ON v.id = m.voucher_id JOIN voucher_types t ON t.id = v.type_id
-     WHERE v.cancelled = 0 AND m.tracked = 0 AND v.date <= ? AND t.parent NOT IN ('Sales Order', 'Purchase Order') ORDER BY v.date, v.id, m.seq`,
+     WHERE v.cancelled = 0 AND m.tracked = 0 AND v.date <= ? AND t.parent NOT IN ${ORDER_PARENTS_SQL}${OWN_GODOWNS} ORDER BY v.date, v.id, m.seq`,
     [to]
   );
   const byItem = new Map<number, Move[]>();
@@ -441,7 +456,7 @@ export async function stockItemVouchers(db: Db, itemId: number, from: string, to
   const all = await db.select<StockMovementRow & { parent: string }>(
     `SELECT v.id AS voucher_id, v.date, t.name AS type, t.parent AS parent, v.number, COALESCE(p.name, '') AS party, m.qty, m.rate, m.amount
      FROM stock_movements m JOIN vouchers v ON v.id = m.voucher_id JOIN voucher_types t ON t.id = v.type_id LEFT JOIN ledgers p ON p.id = v.party_id
-     WHERE m.item_id = ? AND v.cancelled = 0 AND m.tracked = 0 AND v.date <= ? AND t.parent NOT IN ('Sales Order', 'Purchase Order') ORDER BY v.date, v.id, m.seq`,
+     WHERE m.item_id = ? AND v.cancelled = 0 AND m.tracked = 0 AND v.date <= ? AND t.parent NOT IN ${ORDER_PARENTS_SQL}${OWN_GODOWNS} ORDER BY v.date, v.id, m.seq`,
     [itemId, to]
   );
   let running = it.opening_qty;

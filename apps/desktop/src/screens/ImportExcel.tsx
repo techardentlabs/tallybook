@@ -2,7 +2,7 @@ import { KeyButton } from '../ui/KeyButton.tsx';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DEFAULT_TEMPLATE, IMPORT_BEHAVIOURS, IMPORT_FILE_FORMATS, MAPPING_TEMPLATES, MASTER_TYPES, SAMPLE_FILES, createBackup, guessMasterKind, importMastersFromRows, importMastersXml2, importTallyXml,
-  importVouchersFromRows, importVouchersXml2, isVoucherSheet, pickSheet, readSpreadsheet, sampleWorkbook,
+  importVouchersFromRows, importVouchersXml2, isVoucherSheet, pickSheet, readSpreadsheet, sampleWorkbook, tallyJsonToXml,
   type ExcelImportReport, type ImportBehaviour, type MasterKind, type Sheet, type Xml2Report, type ImportReport,
 } from '@tallybook/core';
 import { useScreen } from '../registry.ts';
@@ -92,12 +92,12 @@ function fromExcel(r: ExcelImportReport, isVoucher: boolean): Summary {
   };
 }
 
-function fromXml(a: ImportReport | null, b: Xml2Report): Summary {
+function fromXml(a: ImportReport | null, b: Xml2Report, heading = 'Tally XML'): Summary {
   const created = (a?.created.groups ?? 0) + (a?.created.ledgers ?? 0) + (a?.created.vouchers ?? 0) + Object.values(b.created).reduce((s, n) => s + n, 0);
   const updated = (a?.updated.ledgers ?? 0) + (a?.updated.vouchers ?? 0) + Object.values(b.updated).reduce((s, n) => s + n, 0);
   const errors = [...(a?.errors ?? []), ...b.errors];
   return {
-    heading: 'Tally XML',
+    heading,
     counts: [
       ['Groups', a?.created.groups ?? 0],
       ['Ledgers', a?.created.ledgers ?? 0],
@@ -277,20 +277,33 @@ export function ImportDataScreen({ target }: { target: ImportTarget }) {
   const buildJob = (v: Record<string, unknown>): { dry: () => Promise<Summary>; apply: () => Promise<Summary> } | string => {
     if (!file) return 'Select the file to import first (Ctrl+O)';
     const format = v.format as string;
-    if (format === IMPORT_FILE_FORMATS[1]) return 'JSON (Data Exchange) import is not supported yet';
-    if (format === IMPORT_FILE_FORMATS[2]) {
-      const text = decodeUtf(file.bytes);
+    if (format === IMPORT_FILE_FORMATS[1] || format === IMPORT_FILE_FORMATS[2]) {
+      const json = format === IMPORT_FILE_FORMATS[1];
+      let text = decodeUtf(file.bytes);
+      let mastersText = '';
+      if (json) {
+        try {
+          const conv = tallyJsonToXml(text);
+          text = target === 'masters' ? conv.mastersXml : conv.vouchersXml;
+          mastersText = target === 'transactions' && conv.masters ? conv.mastersXml : '';
+        } catch (e) {
+          return (e as Error).message;
+        }
+      }
+      const heading = json ? 'Tally JSON' : 'Tally XML';
       if (target === 'masters') {
         const behaviour = (v.behaviour as ImportBehaviour) === 'Ignore Duplicates' ? 'ignore' : 'modify';
         return {
-          dry: async () => fromXml(await importTallyXml(books, text, { dryRun: true }), await importMastersXml2(books, text, { dryRun: true, behaviour })),
-          apply: async () => fromXml(await importTallyXml(books, text), await importMastersXml2(books, text, { behaviour })),
+          dry: async () => fromXml(await importTallyXml(books, text, { dryRun: true }), await importMastersXml2(books, text, { dryRun: true, behaviour }), heading),
+          apply: async () => fromXml(await importTallyXml(books, text), await importMastersXml2(books, text, { behaviour }), heading),
         };
       }
-      return {
-        dry: async () => fromXml(null, await importVouchersXml2(books, text, { dryRun: true })),
-        apply: async () => fromXml(null, await importVouchersXml2(books, text)),
+      const run = async (dryRun: boolean) => {
+        const a = mastersText ? await importTallyXml(books, mastersText, { dryRun }) : null;
+        if (mastersText) await importMastersXml2(books, mastersText, { dryRun, behaviour: 'ignore' });
+        return fromXml(a, await importVouchersXml2(books, text, { dryRun }), heading);
       };
+      return { dry: () => run(true), apply: () => run(false) };
     }
     const sheet = pickSheet(sheets, v.sheet as string);
     if (!sheet) return 'Select the worksheet to import';
@@ -409,7 +422,7 @@ export function ImportDataScreen({ target }: { target: ImportTarget }) {
         <Form key={`${file?.name ?? ''}:${sheets.length}`} ref={form} fields={fields} onDone={() => void accept()} labelWidth={380} />
       </div>
       <p className="mt-4 text-xs text-tb-muted">
-        {file ? 'Enter moves to the next field; Ctrl+A imports. Ctrl+O selects another file.' : 'Press Ctrl+O to select the Excel (.xlsx), CSV or XML file to import.'}
+        {file ? 'Enter moves to the next field; Ctrl+A imports. Ctrl+O selects another file.' : 'Press Ctrl+O to select the Excel (.xlsx), CSV, XML or JSON file to import.'}
       </p>
     </Box>
   );

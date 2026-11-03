@@ -11,6 +11,9 @@ import {
   TAX_REGIMES,
   employeeTax,
   employeeTerms,
+  employeeStatutory,
+  saveEmployeeStatutory,
+  type EmployeeStatutory,
   fyOf,
   resetTaxRules,
   saveEmployeeTax,
@@ -213,10 +216,10 @@ export function EmployeeForm({ id, presetName }: { id?: number; presetName?: str
   const groups = useList<EmployeeGroup>(() => employeeGroups(books.db));
   const cur = useRecord(id, (i) => employee(books.db, i));
   const fy = fyOf(period.from || company?.fy_start || new Date().toISOString().slice(0, 10)).from;
-  const [extra, setExtra] = useState<{ regime: TaxRegime; fixed: boolean; leaving: string } | null>(null);
+  const [extra, setExtra] = useState<{ regime: TaxRegime; fixed: boolean; leaving: string; stat: EmployeeStatutory | null } | null>(null);
   useEffect(() => {
-    if (!id) return setExtra({ regime: 'new', fixed: false, leaving: '' });
-    void Promise.all([employeeTax(books.db, id, fy), employeeTerms(books.db, id)]).then(([t, x]) => setExtra({ regime: t.regime, fixed: !!x.fixed_term, leaving: x.date_of_leaving }));
+    if (!id) return setExtra({ regime: 'new', fixed: false, leaving: '', stat: null });
+    void Promise.all([employeeTax(books.db, id, fy), employeeTerms(books.db, id), employeeStatutory(books.db, id)]).then(([t, x, st]) => setExtra({ regime: t.regime, fixed: !!x.fixed_term, leaving: x.date_of_leaving, stat: st }));
   }, [id, fy]);
   if (cur === undefined || !extra) return null;
   const opts = parentOpts(groups);
@@ -255,8 +258,12 @@ export function EmployeeForm({ id, presetName }: { id?: number; presetName?: str
     f('aadhaar', 'Aadhaar number'),
     f('uan', 'Universal Account Number (UAN)'),
     f('pf_number', 'PF account number'),
+    { key: 'eps_number', label: 'EPS account number', kind: 'text', initial: extra.stat?.eps_number ?? '' },
+    { key: 'pf_joining', label: 'Date of joining (PF)', kind: 'text', initial: extra.stat?.pf_joining ? fmtDate(extra.stat.pf_joining) : '' },
+    { key: 'eps_applicable', label: 'Member of Employees Pension Scheme (EPS)', kind: 'toggle', initial: extra.stat ? !!extra.stat.eps_applicable : true },
     f('pran', 'PR Account Number (PRAN)'),
     f('esi_number', 'ESI number'),
+    { key: 'esi_dispensary', label: 'ESI dispensary name', kind: 'text', initial: extra.stat?.esi_dispensary ?? '' },
     { key: 'regime', label: 'Applicable tax regime', kind: 'picker', title: 'Tax Regimes', options: regimeOpts, initial: regimeOpts.find((o) => o.id === extra.regime), required: true, note: `For the financial year from ${fmtDate(fy)}` },
     { key: 'fixed_term', label: 'Fixed term employee', kind: 'toggle', initial: extra.fixed },
     { key: 'leaving', label: 'Date of leaving', kind: 'text', initial: extra.leaving ? fmtDate(extra.leaving) : '' },
@@ -284,9 +291,13 @@ export function EmployeeForm({ id, presetName }: { id?: number; presetName?: str
         const leaving = String(v.leaving || '');
         const leavingIso = leaving ? parseDate(leaving, company?.fy_start) : '';
         if (leaving && !leavingIso) throw new Error('Date of leaving: invalid date');
+        const pfJoin = String(v.pf_joining || '');
+        const pfJoinIso = pfJoin ? parseDate(pfJoin, company?.fy_start) : '';
+        if (pfJoin && !pfJoinIso) throw new Error('Date of joining (PF): invalid date');
         const e = id ? await updateEmployee(books.db, id, input) : await createEmployee(books.db, input);
         await saveEmployeeTax(books.db, e.id, fy, { regime: (String(v.regime || 'new') as TaxRegime) });
         await saveEmployeeTerms(books.db, e.id, { fixed_term: !!v.fixed_term, date_of_leaving: leavingIso ?? '' });
+        await saveEmployeeStatutory(books.db, e.id, { eps_number: String(v.eps_number ?? ''), pf_joining: pfJoinIso ?? '', eps_applicable: v.eps_applicable ? 1 : 0, esi_dispensary: String(v.esi_dispensary ?? '') });
         return v.salary ? e.id : undefined;
       }}
       after={(eid) => nav.push(<SalaryDetailsScreen owner={{ employee_id: eid }} />)}

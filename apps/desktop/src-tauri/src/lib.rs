@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
 use std::fs;
 use std::io::Read;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
@@ -25,6 +27,19 @@ struct Inner {
 struct Db {
     root: PathBuf,
     inner: Mutex<Inner>,
+    aux: Mutex<HashMap<u32, Aux>>,
+    next_aux: AtomicU32,
+}
+
+struct Aux {
+    conn: Connection,
+    readonly: bool,
+}
+
+#[derive(Serialize)]
+struct AuxOpened {
+    handle: u32,
+    encrypted: bool,
 }
 
 #[derive(Serialize)]
@@ -189,13 +204,10 @@ fn export_to(conn: &Connection, dest: &Path, key: &str) -> Result<(), String> {
     result.map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-fn db_select(state: State<Db>, sql: String, params: Vec<Value>) -> Result<Vec<Map<String, Value>>, String> {
-    let guard = state.inner.lock().map_err(|e| e.to_string())?;
-    let conn = guard.conn.as_ref().ok_or_else(|| LOCKED.to_string())?;
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+fn select_rows(conn: &Connection, sql: &str, params: &[Value]) -> Result<Vec<Map<String, Value>>, String> {
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-    let args = bind(&params)?;
+    let args = bind(params)?;
     let mut rows = stmt.query(params_from_iter(args.iter())).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
@@ -215,16 +227,122 @@ fn db_select(state: State<Db>, sql: String, params: Vec<Value>) -> Result<Vec<Ma
     Ok(out)
 }
 
-#[tauri::command]
-fn db_batch(state: State<Db>, stmts: Vec<Stmt>) -> Result<(), String> {
-    let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
-    let conn = guard.conn.as_mut().ok_or_else(|| LOCKED.to_string())?;
+fn run_batch(conn: &mut Connection, stmts: &[Stmt]) -> Result<(), String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    for s in &stmts {
+    for s in stmts {
         let args = bind(&s.params)?;
         tx.execute(&s.sql, params_from_iter(args.iter())).map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn db_select(state: State<Db>, sql: String, params: Vec<Value>) -> Result<Vec<Map<String, Value>>, String> {
+    let guard = state.inner.lock().map_err(|e| e.to_string())?;
+    let conn = guard.conn.as_ref().ok_or_else(|| LOCKED.to_string())?;
+    select_rows(conn, &sql, &params)
+}
+
+#[tauri::command]
+fn db_batch(state: State<Db>, stmts: Vec<Stmt>) -> Result<(), String> {
+    let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
+    let conn = guard.conn.as_mut().ok_or_else(|| LOCKED.to_string())?;
+    run_batch(conn, &stmts)
+}
+
+fn open_readonly(path: &Path, key: Option<&str>) -> Result<Connection, String> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| e.to_string())?;
+    if let Some(k) = key {
+        if k.is_empty() {
+            return Err(WRONG_PASSWORD.into());
+        }
+        conn.pragma_update(None, "key", k).map_err(|_| WRONG_PASSWORD.to_string())?;
+    }
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
+        .map_err(|e| if key.is_some() { WRONG_PASSWORD.to_string() } else { e.to_string() })?;
+    conn.execute_batch("PRAGMA query_only = ON;").map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+#[tauri::command]
+fn aux_status(state: State<Db>, file: String) -> Result<VaultStatus, String> {
+    let path = company_path(&state.root, &file)?;
+    Ok(VaultStatus { encrypted: file_is_encrypted(&path)?, open: path.is_file() })
+}
+
+#[tauri::command]
+fn aux_open(state: State<Db>, file: String, readonly: bool, create: bool, password: String) -> Result<AuxOpened, String> {
+    let path = company_path(&state.root, &file)?;
+    let exists = path.is_file() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+    let key = if password.is_empty() { None } else { Some(password.as_str()) };
+    let (conn, encrypted) = if create {
+        if exists {
+            return Err("A company with this number already exists".into());
+        }
+        if readonly {
+            return Err("A new company cannot be opened read-only".into());
+        }
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        remove_sidecars(&path);
+        (open_conn(&path, key)?, key.is_some())
+    } else {
+        if !exists {
+            return Err("The company data file was not found".into());
+        }
+        let encrypted = file_is_encrypted(&path)?;
+        if encrypted && key.is_none() {
+            return Err(LOCKED.into());
+        }
+        let k = if encrypted { key } else { None };
+        let conn = if readonly {
+            match open_readonly(&path, k) {
+                Ok(c) => c,
+                Err(e) if e == WRONG_PASSWORD => return Err(e),
+                Err(_) => {
+                    let c = open_conn(&path, k)?;
+                    c.execute_batch("PRAGMA query_only = ON;").map_err(|e| e.to_string())?;
+                    c
+                }
+            }
+        } else {
+            open_conn(&path, k)?
+        };
+        (conn, encrypted)
+    };
+    let handle = state.next_aux.fetch_add(1, Ordering::SeqCst) + 1;
+    state.aux.lock().map_err(|e| e.to_string())?.insert(handle, Aux { conn, readonly });
+    Ok(AuxOpened { handle, encrypted })
+}
+
+#[tauri::command]
+fn aux_select(state: State<Db>, handle: u32, sql: String, params: Vec<Value>) -> Result<Vec<Map<String, Value>>, String> {
+    let guard = state.aux.lock().map_err(|e| e.to_string())?;
+    let aux = guard.get(&handle).ok_or_else(|| "The company is not open".to_string())?;
+    select_rows(&aux.conn, &sql, &params)
+}
+
+#[tauri::command]
+fn aux_batch(state: State<Db>, handle: u32, stmts: Vec<Stmt>) -> Result<(), String> {
+    let mut guard = state.aux.lock().map_err(|e| e.to_string())?;
+    let aux = guard.get_mut(&handle).ok_or_else(|| "The company is not open".to_string())?;
+    if aux.readonly {
+        return Err("The company is open read-only".into());
+    }
+    run_batch(&mut aux.conn, &stmts)
+}
+
+#[tauri::command]
+fn aux_close(state: State<Db>, handle: u32) -> Result<(), String> {
+    let aux = state.aux.lock().map_err(|e| e.to_string())?.remove(&handle);
+    if let Some(a) = aux {
+        if !a.readonly {
+            let _ = a.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+        }
+        a.conn.close().map_err(|(_, e)| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -364,7 +482,7 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            app.manage(Db { root: dir, inner: Mutex::new(Inner { path: None, conn: None, encrypted: false }) });
+            app.manage(Db { root: dir, inner: Mutex::new(Inner { path: None, conn: None, encrypted: false }), aux: Mutex::new(HashMap::new()), next_aux: AtomicU32::new(0) });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -376,7 +494,12 @@ pub fn run() {
             db_vault_set,
             company_index_load,
             company_index_save,
-            company_open
+            company_open,
+            aux_status,
+            aux_open,
+            aux_select,
+            aux_batch,
+            aux_close
         ])
         .run(tauri::generate_context!())
         .expect("error while running TallyBook");

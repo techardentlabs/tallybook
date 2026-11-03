@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { companyFileFor, migrateCompanyIndex, serializeCompanyIndex, type CompanyIndex, type Db, type SqlValue, type Stmt } from '@tallybook/core';
-import { storageOf, type Backend, type Registry, type Vault } from './index.ts';
+import { storageOf, type Attached, type Backend, type Registry, type Vault } from './index.ts';
 
 const LEGACY_FILE = 'tallybook.db';
 
@@ -66,6 +66,34 @@ export async function openTauriRegistry(): Promise<Registry> {
     async open(entry) {
       await call('company_open', { file: entry.file || companyFileFor(entry.id, 'path') });
       return storageOf(await openTauriStorage());
+    },
+    async isEncrypted(entry) {
+      return (await call<{ encrypted: boolean; open: boolean }>('aux_status', { file: entry.file || companyFileFor(entry.id, 'path') })).encrypted;
+    },
+    attach: (entry, opts) => attachTauri(entry.file || companyFileFor(entry.id, 'path'), opts.readonly, false, opts.password ?? ''),
+    create: (entry, password) => attachTauri(entry.file || companyFileFor(entry.id, 'path'), false, true, password ?? ''),
+    memory: async () => (await import('./web.ts')).openMemoryDb(),
+  };
+}
+
+async function attachTauri(file: string, readonly: boolean, create: boolean, password: string): Promise<Attached> {
+  const { handle, encrypted } = await call<{ handle: number; encrypted: boolean }>('aux_open', { file, readonly, create, password });
+  let open = true;
+  const db: Db = {
+    select<T>(sql: string, params: SqlValue[] = []): Promise<T[]> {
+      return call<T[]>('aux_select', { handle, sql, params });
+    },
+    async batch(stmts: Stmt[]): Promise<void> {
+      await call('aux_batch', { handle, stmts: stmts.map((s) => ({ sql: s.sql, params: s.params ?? [] })) });
+    },
+  };
+  return {
+    db,
+    encrypted,
+    async close() {
+      if (!open) return;
+      open = false;
+      await call('aux_close', { handle });
     },
   };
 }

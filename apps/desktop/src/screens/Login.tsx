@@ -4,6 +4,8 @@ import {
   changePassword,
   clearLegacyVault,
   currentUser,
+  guardBooks,
+  idleLockMinutes,
   login,
   onUserChange,
   securityEnabled,
@@ -132,9 +134,33 @@ export function MiniForm({
 interface Security {
   enabled: boolean;
   user: SecurityUser | null;
+  locked: boolean;
   can: (action: Action) => boolean;
   setUser: (u: SecurityUser | null) => void;
+  lock: () => void;
+  unlock: (u: SecurityUser) => void;
   refresh: () => Promise<void>;
+}
+
+const IDLE_EVENTS = ['keydown', 'mousedown', 'mousemove', 'wheel', 'touchstart'] as const;
+
+function useIdleLock(minutes: number | null, onIdle: () => void) {
+  const cb = useRef(onIdle);
+  cb.current = onIdle;
+  useEffect(() => {
+    if (!minutes) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => cb.current(), minutes * 60000);
+    };
+    arm();
+    for (const ev of IDLE_EVENTS) document.addEventListener(ev, arm, { passive: true, capture: true });
+    return () => {
+      clearTimeout(timer);
+      for (const ev of IDLE_EVENTS) document.removeEventListener(ev, arm, { capture: true });
+    };
+  }, [minutes]);
 }
 
 const Ctx = createContext<Security | null>(null);
@@ -143,6 +169,8 @@ export function SecurityProvider({ children }: { children: ReactNode }) {
   const { books, version } = useStore();
   const [enabled, setEnabled] = useState(false);
   const [user, setUserState] = useState<SecurityUser | null>(currentUser());
+  const [locked, setLocked] = useState(false);
+  guardBooks(books);
   const refresh = useCallback(async () => {
     setEnabled(await securityEnabled(books.db).catch(() => false));
   }, [books]);
@@ -150,9 +178,15 @@ export function SecurityProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [refresh, version]);
   useEffect(() => onUserChange(() => setUserState(currentUser())), []);
+  const lock = useCallback(() => setLocked(true), []);
+  const unlock = useCallback((u: SecurityUser) => {
+    setCurrentUser(u);
+    setLocked(false);
+  }, []);
+  useIdleLock(enabled && user && !locked ? idleLockMinutes(user) : null, lock);
   const value = useMemo<Security>(
-    () => ({ enabled, user, can: (a) => !enabled || canDo(user, a), setUser: setCurrentUser, refresh }),
-    [enabled, user, refresh]
+    () => ({ enabled, user, locked: enabled && locked, can: (a) => !enabled || canDo(user, a), setUser: setCurrentUser, lock, unlock, refresh }),
+    [enabled, user, locked, lock, unlock, refresh]
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
@@ -165,7 +199,7 @@ export function useSecurity(): Security {
 
 export function LoginGate({ children }: { children: ReactNode }) {
   const { books, company } = useStore();
-  const { enabled, user, setUser } = useSecurity();
+  const { enabled, user, setUser, locked, unlock } = useSecurity();
   const [vaultOk, setVaultOk] = useState<boolean | null>(null);
   useEffect(() => {
     let live = true;
@@ -185,7 +219,14 @@ export function LoginGate({ children }: { children: ReactNode }) {
   if (vaultOk === null) return null;
   if (!vaultOk) return <LegacyVaultPrompt onOpen={() => setVaultOk(true)} />;
   if (enabled && !user) return <LoginScreen onLogin={setUser} />;
-  return <>{children}</>;
+  return (
+    <>
+      <div className="h-full" style={locked ? { display: 'none' } : undefined}>
+        {children}
+      </div>
+      {locked && <LoginScreen onLogin={unlock} lockedFor={user?.username} />}
+    </>
+  );
 }
 
 function Panel({ title, children, width = 440 }: { title: string; children: ReactNode; width?: number }) {
@@ -303,9 +344,9 @@ function LegacyVaultPrompt({ onOpen }: { onOpen: () => void }) {
   );
 }
 
-export function LoginScreen({ onLogin }: { onLogin: (u: SecurityUser) => void }) {
+export function LoginScreen({ onLogin, lockedFor }: { onLogin: (u: SecurityUser) => void; lockedFor?: string }) {
   const { books, company } = useStore();
-  const [v, setV] = useState<MiniValues>({ company: company?.name ?? '', username: '', password: '' });
+  const [v, setV] = useState<MiniValues>({ company: company?.name ?? '', username: lockedFor ?? '', password: '' });
   const [err, setErr] = useState('');
   const [pending, setPending] = useState<SecurityUser | null>(null);
   const submit = async () => {
@@ -321,6 +362,7 @@ export function LoginScreen({ onLogin }: { onLogin: (u: SecurityUser) => void })
   if (pending) return <ForcedChange user={pending} oldPassword={v.password} onDone={onLogin} />;
   return (
     <Panel title="Company Login">
+      {lockedFor !== undefined && <div className="mb-3 text-[13px] italic text-tb-muted">The company was locked after the idle time set for this user. Log in again to continue.</div>}
       <MiniForm
         labelWidth={130}
         rows={[

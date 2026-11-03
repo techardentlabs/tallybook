@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { voucherForex, saveVoucherForex, type EntryForexInput, isMfgJournal, mfgVoucherTypes, type VoucherClass, voucherAllocations, type AllocationRow, batchAllocations, saveBatchAllocations, clearTracking, trackAgainst, canCurrent, ensureDutyLedger, recordDeduction, saveEntryAllocations, type AllocationInput, type TdsPlan, bankAlloc, bankConfig, ensureBanking, saveBankAlloc, tdsCompany, STOCK_VOUCHER_TYPES, fmtDate, parseDate, weekday, todayIso, type BatchAllocInput, type BillInput, type Group, type Ledger, type VoucherRow, type VoucherType } from '@tallybook/core';
-import { useScreen } from '../registry.ts';
+import { voucherClassUse, voucherForex, saveVoucherForex, type EntryForexInput, isMfgJournal, mfgVoucherTypes, type VoucherClass, voucherAllocations, type AllocationRow, batchAllocations, saveBatchAllocations, clearTracking, trackAgainst, canVoucher, currentUser, ensureDutyLedger, recordDeduction, saveEntryAllocations, type AllocationInput, type TdsPlan, bankAlloc, bankConfig, ensureBanking, saveBankAlloc, tdsCompany, STOCK_VOUCHER_TYPES, fmtDate, parseDate, weekday, todayIso, type BatchAllocInput, type BillInput, type Group, type Ledger, type VoucherRow, type VoucherType } from '@tallybook/core';
+import { showAccessDenied, useScreen } from '../registry.ts';
 import { useStore } from '../store.tsx';
 import { registerUnsaved } from '../unsaved.ts';
 import { ManufacturingJournalScreen, ChangeVoucherMode } from './Manufacturing.tsx';
-import { VoucherClassPicker, useVoucherClasses } from './VoucherClass.tsx';
+import { VoucherClassPicker, useTypeOptions, useVoucherClasses } from './VoucherClass.tsx';
 import { useNav } from '../nav.tsx';
 import { useDialogs } from '../ui/Dialogs.tsx';
 import { BillDialog } from '../ui/BillDialog.tsx';
@@ -19,7 +19,6 @@ import { INPUT_SUPPLY, OUTPUT_SUPPLY, ancestry, isUnder } from '../lib.ts';
 import { LedgerForm } from './MasterForms.tsx';
 
 const INVOICE_TYPES = ['Sales', 'Purchase', 'Credit Note', 'Debit Note'];
-const facilityOf = (parent: string) => ((STOCK_VOUCHER_TYPES as readonly string[]).includes(parent) ? 'Inventory Vouchers' : parent === 'Payroll' || parent === 'Attendance' ? 'Payroll Masters' : 'Accounting Vouchers');
 const VOUCHER_BG: Record<string, string> = {
   Payment: '#fffaf4',
   Receipt: '#f2fafd',
@@ -37,6 +36,10 @@ const VOUCHER_BG: Record<string, string> = {
   'Rejection Out': '#fff4fc',
   'Stock Journal': '#faf7fe',
   'Physical Stock': '#faf7fe',
+  'Job Work Out Order': '#faf7fe',
+  'Job Work In Order': '#faf7fe',
+  'Material Out': '#f3ffe9',
+  'Material In': '#fff4fc',
   Payroll: '#fef4f5',
 };
 const BANK_GROUPS = ['Bank Accounts', 'Bank OD A/c'];
@@ -49,6 +52,7 @@ function toInitial(v: VoucherRow, ledgers: Ledger[], groups: Group[], invoice: b
       party_id: v.party_id,
       place_of_supply: v.place_of_supply,
       items: v.stock.map((m) => ({ item_id: m.item_id, godown_id: m.godown_id ?? null, ledgerId: m.ledger_id ?? null, qty: m.qty, rate: m.rate, tracked: m.tracked, batches: batchMap.get(m.id) })),
+      entries: v.entries.map((e) => ({ ledger_id: e.ledger_id, amount: e.amount })),
     };
   }
   if (!invoice) {
@@ -158,6 +162,12 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
   const classes = useVoucherClasses(type.id);
   const [vclass, setVclass] = useState<VoucherClass | null>(null);
   const askedClass = useRef(false);
+  const typeOpts = useTypeOptions(type.id);
+  const pos = type.parent === 'Sales' && !!typeOpts?.pos_invoicing;
+  useEffect(() => {
+    if (!editing || !source) return;
+    void voucherClassUse(books.db, source.id).then((c) => c && setVclass(c)).catch(() => undefined);
+  }, [books, editing, source]);
   useEffect(() => {
     if (editing || askedClass.current || !classes.length) return;
     askedClass.current = true;
@@ -279,7 +289,7 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
 
   const save = async () => {
     if (saving.current) return;
-    if (!canCurrent(`${facilityOf(type.parent)}.${editing ? 'alter' : 'create'}`)) return toast('You do not have access to this action', 'err');
+    if (!canVoucher(currentUser(), type.name, type.parent, editing ? 'alter' : 'create')) return showAccessDenied();
     const iso = commitDate();
     if (!iso) return dateRef.current?.focus();
     const built = await body.current?.build();
@@ -378,6 +388,7 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
         const oldTrack = oldIds.length ? await books.db.select<{ movement_id: number; against_id: number; qty: number }>(`SELECT movement_id, against_id, qty FROM stockx_track WHERE movement_id IN (${oldIds.map(() => '?').join(', ')})`, oldIds) : [];
         for (const id of oldIds) await clearTracking(books.db, id);
         await books.updateVoucher(source.id, payload);
+        if (built.after) await built.after(source.id);
         const fresh = await books.voucher(source.id);
         const links = built.track?.length ? built.track : oldTrack.map((t) => ({ index: oldIds.indexOf(t.movement_id), against: t.against_id, qty: t.qty }));
         for (const t of links) if (fresh?.stock[t.index]) await trackAgainst(books.db, fresh.stock[t.index].id, t.against, t.qty);
@@ -396,6 +407,7 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
         nav.pop();
       } else {
         const v = await books.createVoucher(payload);
+        if (built.after) await built.after(v.id);
         for (const t of built.track ?? []) if (v.stock[t.index]) await trackAgainst(books.db, v.stock[t.index].id, t.against, t.qty);
         for (const b of built.batches ?? []) if (v.stock[b.index]) await saveBatchAllocations(books.db, v.stock[b.index].id, b.allocs);
         if (built.forex?.length) await saveVoucherForex(books.db, v, built.forex.map((f) => ({ entry_index: f.index, forex: f.forex })));
@@ -434,7 +446,7 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
 
   const remove = async () => {
     if (!editing || !source) return;
-    if (!canCurrent(`${facilityOf(type.parent)}.delete`)) return toast('You do not have access to this action', 'err');
+    if (!canVoucher(currentUser(), type.name, type.parent, 'delete')) return showAccessDenied();
     if (!(await dialogs.confirm('Delete ?', { title: 'Delete', def: false }))) return;
     await books.deleteVoucher(source.id);
     bump();
@@ -444,7 +456,7 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
 
   const cancelVoucher = async () => {
     if (!editing || !source) return;
-    if (!canCurrent(`${facilityOf(type.parent)}.delete`)) return toast('You do not have access to this action', 'err');
+    if (!canVoucher(currentUser(), type.name, type.parent, 'delete')) return showAccessDenied();
     if (!(await dialogs.confirm('Cancel Voucher ?', { title: 'Cancel voucher', def: false }))) return;
     await books.cancelVoucher(source.id);
     bump();
@@ -474,9 +486,10 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
       'Alt+X': () => (editing ? void cancelVoucher() : false),
       'Alt+2': () => (editing ? duplicate() : false),
       'Alt+R': () => body.current?.removeLine(),
+      'Alt+I': () => (pos && body.current?.multiMode ? body.current.multiMode() : false),
       'Ctrl+H': () => {
         if (type.parent === 'Stock Journal' && !editing) return void nav.push(<ChangeVoucherMode current="Use for Stock Journal" onPick={(m) => m === 'Use for Manufacturing Journal' && nav.replace(<ManufacturingJournalScreen />)} />);
-        if (!gst || editing || itemMode || stockMode) return false;
+        if (!gst || editing || itemMode || stockMode || pos) return false;
         if (body.current?.isDirty()) return toast('Clear the entries before changing the view', 'err');
         setInvoice((v) => !v);
         setResetKey((k) => k + 1);
@@ -484,8 +497,9 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
     },
     buttons: [
       { key: 'F2', label: 'Date', run: () => dateRef.current?.focus() },
-      ...(type.parent === 'Stock Journal' && !editing ? [{ key: 'Ctrl+H', label: 'Change Mode', run: () => undefined }] : gst && !editing ? [{ key: 'Ctrl+H', label: invoice ? 'As Voucher' : 'Invoice View', run: () => undefined }] : []),
+      ...(type.parent === 'Stock Journal' && !editing ? [{ key: 'Ctrl+H', label: 'Change Mode', run: () => undefined }] : gst && !editing && !pos ? [{ key: 'Ctrl+H', label: invoice ? 'As Voucher' : 'Invoice View', run: () => undefined }] : []),
       { key: 'Alt+R', label: 'Remove Line', run: () => body.current?.removeLine() },
+      ...(pos ? [{ key: 'Alt+I', label: 'Multi Mode Pymt', run: () => body.current?.multiMode?.(), disabled: !!vclass?.pos_class }] : []),
       ...(editing
         ? [
             { key: 'Alt+2', label: 'Duplicate Vch', run: duplicate },
@@ -501,7 +515,7 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
   });
 
   const stockMode = (STOCK_VOUCHER_TYPES as readonly string[]).includes(type.parent);
-  const Body = stockMode ? StockBody : itemMode ? ItemInvoiceBody : invoice ? InvoiceBody : AccountingBody;
+  const Body = stockMode ? StockBody : itemMode || pos ? ItemInvoiceBody : invoice ? InvoiceBody : AccountingBody;
   const chain = ancestry(groups, undefined);
   void chain;
 
@@ -509,7 +523,7 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
     <div className="-m-4 flex min-h-[calc(100vh-90px)] flex-col px-2 pb-2" style={{ backgroundColor: VOUCHER_BG[type.parent] ?? '#fffaf4' }}>
       <div className="flex items-start justify-between pt-1">
         <div className="flex items-center gap-2">
-          <span className="w-[120px] bg-tb-top py-px text-center font-bold text-white">{type.name}</span>
+          <span className="min-w-[120px] whitespace-nowrap bg-tb-top px-2 py-px text-center font-bold text-white">{type.name}</span>
           <span className="flex items-center gap-1">
             No.
             {numberEditable ? (
@@ -550,8 +564,8 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
         </div>
       </div>
 
-      <Body
-        key={`${invoice}-${resetKey}`}
+      {typeOpts && <Body
+        key={`${invoice}-${pos}-${resetKey}`}
         ref={body}
         type={type}
         ledgers={ledgers}
@@ -562,7 +576,9 @@ function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: 
         onDirty={() => setDirty(true)}
         initial={initial}
         vclass={vclass}
-      />
+        voucherId={editing ? source?.id : undefined}
+        pos={pos}
+      />}
 
       <div className="mt-3 flex items-center gap-2">
         <label>Narration:</label>

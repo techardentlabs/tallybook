@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { fmtAmount, fmtQty, godowns as loadGodowns, lineAmount, parseAmount, parseQty, pendingDocs, stockItems as loadItems, type BatchAllocInput, type Godown, type Ledger, type PendingDoc, type StockItem } from '@tallybook/core';
+import { fmtAmount, fmtQty, godowns as loadGodowns, lineAmount, parseAmount, parseQty, pendingDocs, stockItems as loadItems, type BatchAllocInput, type Godown, type Ledger, type PendingDoc, type StockItem, consumptionFor, issueCost, jobOrder, jobWorkTypeOptions, materialLink, orderMeta, pendingForMaterial, pendingJobOrders, saveMaterialLink, saveOrderMeta, THIRD_PARTY_KINDS, type JobOrder, type JobWorkTypeOptions, type MaterialParent } from '@tallybook/core';
 import { PickerInput, type Opt } from '../ui/PickerInput.tsx';
 import { useStore } from '../store.tsx';
 import { BatchAllocationDialog } from './Batches.tsx';
@@ -18,7 +18,7 @@ interface Line {
   batches?: BatchAllocInput[];
 }
 
-const WITH_PARTY = ['Delivery Note', 'Receipt Note', 'Sales Order', 'Purchase Order', 'Rejection In', 'Rejection Out'];
+const WITH_PARTY = ['Delivery Note', 'Receipt Note', 'Sales Order', 'Purchase Order', 'Rejection In', 'Rejection Out', 'Job Work Out Order', 'Job Work In Order', 'Material Out', 'Material In'];
 const OUTWARD = ['Delivery Note', 'Rejection Out'];
 const blank = (g?: Godown, side: 'Out' | 'In' = 'Out'): Line => ({ item: null, text: '', godown: g ?? null, godownText: g?.name ?? '', side, qty: '', rate: '' });
 
@@ -30,6 +30,37 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
   const journal = parent === 'Stock Journal';
   const physical = parent === 'Physical Stock';
   const withParty = WITH_PARTY.includes(parent);
+  const jwOrder = parent === 'Job Work Out Order' || parent === 'Job Work In Order';
+  const material = parent === 'Material Out' || parent === 'Material In' ? (parent as MaterialParent) : null;
+  const [duration, setDuration] = useState('');
+  const [nature, setNature] = useState('');
+  const [jwOrders, setJwOrders] = useState<JobOrder[]>([]);
+  const [jwOrderText, setJwOrderText] = useState('Not Applicable');
+  const [jwOrderId, setJwOrderId] = useState<number | null>(null);
+  const [partyGodown, setPartyGodown] = useState<Godown | null>(null);
+  const [partyGodownText, setPartyGodownText] = useState('Not Applicable');
+  const [challan, setChallan] = useState('');
+  const [jwOpts, setJwOpts] = useState<JobWorkTypeOptions | null>(null);
+  const [skipGodown, setSkipGodown] = useState<number | null>(null);
+  useEffect(() => {
+    if (material) void jobWorkTypeOptions(books.db, type.id).then(setJwOpts);
+  }, [books, material, type.id]);
+  useEffect(() => {
+    if (!props.voucherId) return;
+    if (jwOrder) void orderMeta(books.db, props.voucherId).then((m) => { setDuration(m.duration); setNature(m.nature); });
+    if (material)
+      void materialLink(books.db, props.voucherId).then(async (l) => {
+        setChallan(l.challan_no);
+        setJwOrderId(l.order_voucher_id);
+        if (l.order_voucher_id) setJwOrderText((await jobOrder(books.db, l.order_voucher_id))?.number ?? 'Not Applicable');
+        if (l.party_godown_id) {
+          setSkipGodown(l.party_godown_id);
+          const g = (await loadGodowns(books.db)).find((x) => x.id === l.party_godown_id) ?? null;
+          setPartyGodown(g);
+          setPartyGodownText(g?.name ?? 'Not Applicable');
+        }
+      });
+  }, [books, jwOrder, material, props.voucherId]);
 
   const [items, setItems] = useState<StockItem[]>([]);
   const [houses, setHouses] = useState<Godown[]>([]);
@@ -44,6 +75,7 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
   const partyOpts: Opt[] = partyLedgers.map((l) => ({ id: l.id, label: l.name }));
   const itemOpts: Opt[] = items.map((i) => ({ id: i.id, label: i.name }));
   const houseOpts: Opt[] = houses.map((g) => ({ id: g.id, label: g.name }));
+  const partyGodownOpts: Opt[] = [{ id: 0, label: 'Not Applicable' }, ...houses.filter((g) => g.third_party).map((g) => ({ id: g.id, label: g.name, sub: THIRD_PARTY_KINDS[g.third_party] }))];
   const multiHouse = houses.length > 1;
 
   const initParty = initial?.party_id ? partyLedgers.find((l) => l.id === initial.party_id) : undefined;
@@ -61,13 +93,13 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
   useEffect(() => {
     if (!initial?.items?.length || !items.length) return;
     setLines(
-      initial.items.map((it) => {
+      initial.items.filter((it) => !material || !skipGodown || it.godown_id !== skipGodown).map((it) => {
         const item = items.find((x) => x.id === it.item_id) ?? null;
         const g = houses.find((x) => x.id === it.godown_id) ?? houses[0] ?? null;
         return { item, text: item?.name ?? '', godown: g, godownText: g?.name ?? '', side: it.qty < 0 ? 'Out' : 'In', qty: fmtQty(Math.abs(it.qty), 0), rate: fmtAmount(it.rate), batches: it.batches };
       })
     );
-  }, [initial, items, houses]);
+  }, [initial, items, houses, material, skipGodown]);
   useEffect(() => {
     if (houses.length) setLines((ls) => ls.map((l) => (l.godown ? l : { ...l, godown: houses[0], godownText: houses[0].name })));
   }, [houses]);
@@ -109,11 +141,42 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
           toast('Add at least one item', 'err');
           return null;
         }
-        const stock = rows.map((l) => {
+        let stock = rows.map((l) => {
           const q = parseQty(l.qty)!;
           const rate = parseAmount(l.rate) ?? 0;
           return { item_id: l.item!.id, godown_id: l.godown?.id ?? 1, qty: physical ? q : signFor(l) * q, rate, amount: lineAmount(q, rate) };
         });
+        if (material) {
+          const extra: typeof stock = [];
+          try {
+            for (const m of stock) {
+              const q = Math.abs(m.qty);
+              if (material === 'Material Out') {
+                if (!m.rate) {
+                  const c = await issueCost(books.db, m.item_id, q, props.date);
+                  m.rate = c.rate;
+                  m.amount = lineAmount(q, c.rate);
+                }
+                m.qty = -q;
+                if (partyGodown) extra.push({ ...m, godown_id: partyGodown.id, qty: q });
+              } else {
+                m.qty = q;
+                if (!partyGodown) continue;
+                const cons = jwOpts?.allow_consumption ? await consumptionFor(books.db, m.item_id, q) : [];
+                if (cons.length) {
+                  for (const c of cons) {
+                    const cost = await issueCost(books.db, c.item_id, c.qty, props.date);
+                    extra.push({ item_id: c.item_id, godown_id: partyGodown.id, qty: -c.qty, rate: cost.rate, amount: lineAmount(c.qty, cost.rate) });
+                  }
+                } else extra.push({ ...m, godown_id: partyGodown.id, qty: -q });
+              }
+            }
+          } catch (e) {
+            toast((e as Error).message, 'err');
+            return null;
+          }
+          stock = [...stock, ...extra];
+        }
         const track = rows.flatMap((l, index) => (l.against ? [{ index, against: l.against, qty: parseQty(l.qty)! }] : []));
         const missing = rows.find((l) => needsBatch(l) && l.batches?.reduce((a, b) => a + b.qty, 0) !== parseQty(l.qty));
         if (missing) {
@@ -121,7 +184,12 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
           return null;
         }
         const batches = rows.flatMap((l, index) => (needsBatch(l) && l.batches?.length ? [{ index, allocs: l.batches }] : []));
-        return { entries: [], party_id: party?.id ?? null, stock, track, batches };
+        const after = jwOrder
+          ? (id: number) => saveOrderMeta(books.db, id, { duration, nature })
+          : material
+            ? (id: number) => saveMaterialLink(books.db, id, { order_voucher_id: jwOrderId, party_godown_id: partyGodown?.id ?? null, challan_no: challan })
+            : undefined;
+        return { entries: [], party_id: party?.id ?? null, stock, track, batches, after };
       },
       reset() {
         dirty.current = false;
@@ -136,7 +204,7 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
       },
       isDirty: () => dirty.current,
     }),
-    [company, firstCell, focus, houses, parent, party, physical, toast, withParty, journal]
+    [company, firstCell, focus, houses, parent, party, physical, toast, withParty, journal, material, jwOrder, partyGodown, jwOpts, jwOrderId, challan, duration, nature, books, props.date]
   );
   useEffect(() => {
     if (!initial?.items?.length) focus(firstCell);
@@ -172,7 +240,13 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
                 const l = ledgers.find((x) => x.id === o.id)!;
                 setParty(l);
                 setPartyText(l.name);
-                if (orderKind && !initial?.items?.length) {
+                if (material && !initial?.items?.length) {
+                  void pendingJobOrders(books.db, material, l.id, props.date).then((d) => {
+                    setJwOrders(d);
+                    focus(d.length ? 'jworder' : 'jwgod');
+                  });
+                } else if (jwOrder) focus('jwdur');
+                else if (orderKind && !initial?.items?.length) {
                   void pendingDocs(books.db, orderKind, 'note', l.id, props.date).then((d) => {
                     setOrders(d);
                     setOrderText('Not Applicable');
@@ -219,6 +293,85 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
             />
           </div>
         </div>
+      )}
+      {jwOrder && (
+        <>
+          <div className="flex items-center">
+            <span className="w-44">Duration of Process</span>
+            <span className="mr-2">:</span>
+            <input className="tb-input w-[200px]" data-cell="jwdur" value={duration} onChange={(e) => { touch(); setDuration(e.target.value); }} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); focus('jwnat'); } }} />
+          </div>
+          <div className="flex items-center">
+            <span className="w-44">Nature of Processing</span>
+            <span className="mr-2">:</span>
+            <input className="tb-input w-[360px]" data-cell="jwnat" value={nature} onChange={(e) => { touch(); setNature(e.target.value); }} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); focus('i0-0'); } }} />
+          </div>
+        </>
+      )}
+      {material && (
+        <>
+          {(jwOrders.length > 0 || jwOrderId) && (
+            <div className="flex items-center">
+              <span className="w-44">Order No(s)</span>
+              <span className="mr-2">:</span>
+              <div className="w-[360px]">
+                <PickerInput
+                  className="tb-input w-full font-bold"
+                  value={jwOrderText}
+                  title="Job Work Orders"
+                  options={[{ id: 0, label: 'Not Applicable' }, ...jwOrders.map((o) => ({ id: o.voucher_id, label: o.number, sub: `Job Work ${o.kind} Order · ${o.date.split('-').reverse().join('-')}` }))]}
+                  inputRef={(el) => el?.setAttribute('data-cell', 'jworder')}
+                  onChange={(t) => setJwOrderText(t)}
+                  onPick={(o) => {
+                    setJwOrderText(o.label);
+                    setJwOrderId(Number(o.id) || null);
+                    if (o.id) {
+                      void pendingForMaterial(books.db, Number(o.id), material).then((p) => {
+                        touch();
+                        setLines([
+                          ...p.map((pl) => {
+                            const it = items.find((x) => x.id === pl.item_id) ?? null;
+                            const g = houses.find((x) => x.id === pl.godown_id && !x.third_party) ?? houses[0] ?? null;
+                            return { item: it, text: it?.name ?? '', godown: g, godownText: g?.name ?? '', side: 'Out' as const, qty: fmtQty(pl.qty, 0), rate: pl.rate ? fmtAmount(pl.rate) : '' };
+                          }),
+                          blank(houses[0], 'Out'),
+                        ]);
+                      });
+                    }
+                    focus('jwgod');
+                  }}
+                  onNoMatch={() => toast('Choose an order or Not Applicable', 'err')}
+                  onBackspaceEmpty={() => focus('party')}
+                />
+              </div>
+            </div>
+          )}
+          <div className="flex items-center">
+            <span className="w-44">{material === 'Material Out' ? 'Destination Godown' : 'Source Godown'}</span>
+            <span className="mr-2">:</span>
+            <div className="w-[360px]">
+              <PickerInput
+                className="tb-input w-full font-bold"
+                value={partyGodownText}
+                title="Godowns"
+                options={partyGodownOpts}
+                inputRef={(el) => el?.setAttribute('data-cell', 'jwgod')}
+                onChange={(t) => setPartyGodownText(t)}
+                onPick={(o) => {
+                  setPartyGodownText(o.label);
+                  setPartyGodown(houses.find((g) => g.id === o.id) ?? null);
+                  focus('jwchal');
+                }}
+                onNoMatch={() => toast('Choose a godown or Not Applicable', 'err')}
+              />
+            </div>
+          </div>
+          <div className="flex items-center">
+            <span className="w-44">{material === 'Material Out' ? 'Dispatch Doc No.' : 'Challan No.'}</span>
+            <span className="mr-2">:</span>
+            <input className="tb-input w-[200px]" data-cell="jwchal" value={challan} onChange={(e) => { touch(); setChallan(e.target.value); }} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); focus('i0-0'); } }} />
+          </div>
+        </>
       )}
       <div className={`mt-3 ${cols} ${head}`}>
         {journal && <span className="pl-1">Source / Dest.</span>}

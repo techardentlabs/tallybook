@@ -1,7 +1,8 @@
+import { isGroupCompanyOpen } from './db/companies.ts';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Ledger } from '@tallybook/core';
 import { keyName, VOUCHER_HOTKEYS } from './keys.ts';
-import { topEntry, useTop } from './registry.ts';
+import { screenDenial, showAccessDenied, topEntry, useTop } from './registry.ts';
 import { useStore } from './store.tsx';
 import { useNav } from './nav.tsx';
 import { Gateway, useGo } from './screens/Gateway.tsx';
@@ -10,7 +11,7 @@ import { FeaturesScreen, CompanyAlter } from './screens/Features.tsx';
 import { HelpScreen, useUpdateCheck } from './screens/Help.tsx';
 import { LedgerReport } from './screens/Reports.tsx';
 import { VoucherScreen } from './screens/Voucher.tsx';
-import { ensureMfg, ensureStockVoucherTypes, fmtDate } from '@tallybook/core';
+import { canCurrent, ensureJobWork, ensureMfg, ensureStockVoucherTypes, fmtDate, GROUP_READ_ONLY } from '@tallybook/core';
 import { saveTextFile } from './files.ts';
 import { PayrollVoucherScreen, AttendanceVoucherScreen } from './screens/PayrollVoucher.tsx';
 import { useShareKeys } from './screens/Share.tsx';
@@ -71,14 +72,18 @@ export function Shell({ children }: { children: ReactNode }) {
   extraKeys.current = { ...shareKeys, ...printKeys, ...companyKeys.keys } as never;
   const { books, bump } = useStore();
   useEffect(() => {
-    if (company?.inventory_enabled) void ensureStockVoucherTypes(books.db).then(async (added) => { const before = (await books.voucherTypes()).length; await ensureMfg(books.db); if (added || (await books.voucherTypes()).length !== before) bump(); });
-  }, [company?.inventory_enabled, books, bump]);
+    if (company?.inventory_enabled) void ensureStockVoucherTypes(books.db).then(async (added) => { const before = (await books.voucherTypes()).length; await ensureMfg(books.db); await ensureJobWork(books.db); if (added || (await books.voucherTypes()).length !== before) bump(); });
+  }, [company?.inventory_enabled, company?.job_work_enabled, books, bump]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const k = keyName(e);
       const t = topEntry();
       const handler = t?.keys?.[k];
+      if (handler && k === 'F12' && t?.kind !== 'modal' && !canCurrent('Configuration.display')) {
+        e.preventDefault();
+        return showAccessDenied();
+      }
       if (handler) {
         if (handler(e) !== false) e.preventDefault();
         return;
@@ -107,8 +112,12 @@ export function Shell({ children }: { children: ReactNode }) {
         F11: () => nav.push(<FeaturesScreen />),
         'Ctrl+Q': () => void go.quit(),
         'Ctrl+F4': () => (company.payroll_enabled ? nav.push(<PayrollVoucherScreen />) : toast('Enable payroll in F11 (Features) to use this voucher', 'err')),
-        'Ctrl+E': () => exportVisibleTable(toast),
+        'Ctrl+E': () => (screenDenial('Share') ? showAccessDenied() : exportVisibleTable(toast)),
       };
+      if (voucher && isGroupCompanyOpen()) {
+        e.preventDefault();
+        return toast(GROUP_READ_ONLY, 'err');
+      }
       if (voucher) {
         e.preventDefault();
         if (t?.kind === 'voucher') nav.replace(<VoucherScreen typeName={voucher} />);

@@ -4,6 +4,22 @@ All notable changes to TallyBook are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+- Job Work: "Enable Job Order Processing" in F11 adds Job Work Out Order, Job Work In Order, Material Out and Material In vouchers. Orders record Duration of Process and Nature of Processing; Material Out/In pick the Order No(s), fill the pending components or finished goods, move stock to or from the job worker's godown at cost, and consume components on receipt when the voucher type allows it. Godowns can be marked "Our Stock with Third Party" or "Third Party Stock with Us" (the latter stays out of your stock value). Reports: Job Work Orders Summary, Components Order Summary, Job Work Out/In Orders Book, Material Out/In Register, Material Movement Register, Stock with Job Worker, Stock from Party, Issue and Receipt Variance Analysis.
+- Godowns can be altered (Alter → Godown).
+- Point of Sale: a Sales voucher type with "Use for POS invoicing" opens POS invoices with Cash as the party, quantity defaulting to 1, Cash Tendered and Balance, and Alt+I for multi-mode payment (gift voucher, card, cheque/DD, cash). POS classes fix the payment ledgers. Scanning or typing an item's alias picks the item. POS Register under Account Books.
+- Voucher classes in invoices: "Default Accounting Allocations for each Item in Invoice" splits item values across ledgers, and "Additional Accounting Entries" (percentage, flat, on subtotal, on quantity, rounding, user-defined, Remove if Zero) are calculated below the items. The class used is remembered when altering.
+- Security: TallyPrime's facility list (87 facilities) with Type of Access (Full Access, Create, Alter, Display, Print and so on) in security levels, voucher-type rules (disallow Vouchers, allow Sales), back-dated voucher limits and cut-off date, and auto lock on idle time. Every screen and menu is checked in one place: denied entries are greyed and show "No Access Allowed!", and denied changes are never written.
+- TDS and TCS: interest for late deduction and late payment (1% and 1.5% per month or part) and the ₹200-a-day late filing fee, shown in a new Interest and Late Fee report and payable through TDS/TCS payment. TCS payment and Form 27EQ reports.
+- e-TDS return files for the quarterly statement in Protean's file format: Form 26Q and 27EQ up to 2025-26, Form 140 and 143 from 2026-27, with a list of missing details before export. Deductor details gain the fields the file needs.
+- Payroll statutory reports: PF Monthly Statement with ECR file export (Alt+E), Form 3A, Form 6A, and ESI Monthly Statement with the monthly contribution upload file. Employees gain EPS and ESI fields.
+- Split Company Data (Alt+Y → Split): Verify Data, then split from a date into a new company with closing balances, pending bills, stock, batches and unreconciled bank entries carried as opening; the original company is not changed and the opening trial balance is reconciled on screen.
+- Group Company: combines member companies read-only for Balance Sheet, Profit & Loss, Trial Balance and other reports (Alt+K → Group Company, or Alt+F3).
+- JSON data exchange: import and export masters and transactions in TallyPrime's JSON format through Alt+O and Alt+E.
+
+### Changed
+- Voucher type name box widens to fit long names.
+
 ## [0.2.1] - 2026-11-03
 
 ### Changed
