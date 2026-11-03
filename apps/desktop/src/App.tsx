@@ -10,13 +10,14 @@ import { FeaturesScreen, CompanyAlter } from './screens/Features.tsx';
 import { HelpScreen, useUpdateCheck } from './screens/Help.tsx';
 import { LedgerReport } from './screens/Reports.tsx';
 import { VoucherScreen } from './screens/Voucher.tsx';
-import { ensureStockVoucherTypes, fmtDate } from '@tallybook/core';
+import { ensureMfg, ensureStockVoucherTypes, fmtDate } from '@tallybook/core';
 import { saveTextFile } from './files.ts';
 import { PayrollVoucherScreen, AttendanceVoucherScreen } from './screens/PayrollVoucher.tsx';
 import { useShareKeys } from './screens/Share.tsx';
 import { usePrintKeys } from './screens/PrintMenu.tsx';
 import { CompanyMenu } from './screens/CompanyMenu.tsx';
 import { DataMenu } from './screens/DataMenu.tsx';
+import { useCompanyKeys } from './screens/Companies.tsx';
 
 function exportVisibleTable(toast: (m: string, k?: 'ok' | 'err') => void) {
   const tables = [...document.querySelectorAll('main table')];
@@ -65,11 +66,12 @@ export function Shell({ children }: { children: ReactNode }) {
   }, []);
   const shareKeys = useShareKeys(fmtDate);
   const printKeys = usePrintKeys(fmtDate);
+  const companyKeys = useCompanyKeys();
   const extraKeys = useRef<Record<string, (e: KeyboardEvent) => void | boolean>>({});
-  extraKeys.current = { ...shareKeys, ...printKeys } as never;
+  extraKeys.current = { ...shareKeys, ...printKeys, ...companyKeys.keys } as never;
   const { books, bump } = useStore();
   useEffect(() => {
-    if (company?.inventory_enabled) void ensureStockVoucherTypes(books.db).then((added) => added && bump());
+    if (company?.inventory_enabled) void ensureStockVoucherTypes(books.db).then(async (added) => { const before = (await books.voucherTypes()).length; await ensureMfg(books.db); if (added || (await books.voucherTypes()).length !== before) bump(); });
   }, [company?.inventory_enabled, books, bump]);
 
   useEffect(() => {
@@ -82,7 +84,9 @@ export function Shell({ children }: { children: ReactNode }) {
         return;
       }
       if (t?.swallow) {
-        if (!['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) e.preventDefault();
+        const el = e.target as HTMLElement | null;
+        const typing = !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && !e.ctrlKey && !e.altKey && !e.metaKey && !/^F\d+$/.test(e.key);
+        if (!typing && !['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) e.preventDefault();
         return;
       }
       if (t?.kind === 'modal') return;
@@ -184,9 +188,10 @@ export function Shell({ children }: { children: ReactNode }) {
             const find = (k: string) => btns.find((b) => norm(b.key) === k);
             const used = new Set<string>();
             const slot = (k: string) => {
-              const b = find(k);
-              if (b) used.add(b.key);
-                            const label = b?.label ?? '';
+              const given = find(k);
+              const b = k === 'F3' && company && !given?.run && top?.kind !== 'modal' ? companyKeys.button : given;
+              if (given) used.add(given.key);
+              const label = b?.label ?? '';
               const disabled = !b || !!b.disabled;
               return (
                 <div key={k} className={`mb-[2px] flex h-[28px] items-stretch ${disabled ? 'text-[#a7b0b8]' : ''}`}>

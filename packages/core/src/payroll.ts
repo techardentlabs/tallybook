@@ -2,6 +2,9 @@ import { CoreError, one, type Db, type Stmt } from './db.ts';
 import { clean, newGuid } from './util.ts';
 import type { Books, VoucherRow } from './books.ts';
 import { QTY_SCALE } from './inventory.ts';
+import { ageOn, addMonthsIso, computeGratuity, defaultTaxRules, regimeLabel, roundToTen, taxOnIncome, type GratuityResult, type ServiceSpan, type TaxOnIncome, type TaxRegime, type TaxRules } from './incometax.ts';
+
+export * from './incometax.ts';
 
 export const PAYROLL_VOUCHER_TYPE = 'Payroll';
 
@@ -125,6 +128,32 @@ export const PAYROLL_SCHEMA: string[] = [
     amount INTEGER NOT NULL,
     seq INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS pr_employee_tax (
+    employee_id INTEGER NOT NULL REFERENCES pr_employees(id),
+    fy_start TEXT NOT NULL,
+    regime TEXT NOT NULL DEFAULT 'new',
+    hra_exemption INTEGER NOT NULL DEFAULT 0,
+    sec80c INTEGER NOT NULL DEFAULT 0,
+    sec80ccd1b INTEGER NOT NULL DEFAULT 0,
+    sec80d INTEGER NOT NULL DEFAULT 0,
+    other_deductions INTEGER NOT NULL DEFAULT 0,
+    home_loan_interest INTEGER NOT NULL DEFAULT 0,
+    other_income INTEGER NOT NULL DEFAULT 0,
+    previous_salary INTEGER NOT NULL DEFAULT 0,
+    previous_tds INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (employee_id, fy_start)
+  )`,
+  `CREATE TABLE IF NOT EXISTS pr_employee_terms (
+    employee_id INTEGER PRIMARY KEY REFERENCES pr_employees(id),
+    fixed_term INTEGER NOT NULL DEFAULT 0,
+    date_of_leaving TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS pr_tax_rules (
+    fy_start TEXT NOT NULL,
+    regime TEXT NOT NULL,
+    data TEXT NOT NULL,
+    PRIMARY KEY (fy_start, regime)
+  )`,
 ];
 
 export const PAY_HEAD_TYPES = [
@@ -147,7 +176,11 @@ export const COMPUTE_BASES = ['On Specified Formula', 'On Current Earnings Total
 export const ROUNDING_METHODS = ['Not Applicable', 'Normal Rounding', 'Downward Rounding', 'Upward Rounding'] as const;
 export const ATTENDANCE_KINDS = ['Attendance / Leave with Pay', 'Attendance / Leave without Pay', 'Production', 'User Defined Calendar Type'] as const;
 export const PER_OPTIONS = ['Days', 'Weeks', 'Months', 'Hours'] as const;
-export const STATUTORY_KINDS = ['', 'PF', 'ESI', 'PT'] as const;
+export const STATUTORY_KINDS = ['', 'PF', 'ESI', 'PT', 'IT'] as const;
+export const IT_CALC = 'As Per Income Tax Slab';
+export const GRATUITY_CALC = 'As Per Gratuity Act';
+export const ALL_CALC_TYPES = [...CALC_TYPES, IT_CALC, GRATUITY_CALC] as const;
+export const TAXABLE_EARNING_TYPES = ['Earnings for Employees', 'Bonus'];
 
 export type PayHeadSide = 'earn' | 'ded' | 'emp';
 
@@ -427,6 +460,8 @@ export async function deleteEmployee(db: Db, id: number): Promise<void> {
   await db.batch([
     { sql: 'DELETE FROM pr_salary WHERE employee_id = ?', params: [id] },
     { sql: 'DELETE FROM pr_attendance WHERE employee_id = ?', params: [id] },
+    { sql: 'DELETE FROM pr_employee_tax WHERE employee_id = ?', params: [id] },
+    { sql: 'DELETE FROM pr_employee_terms WHERE employee_id = ?', params: [id] },
     { sql: 'DELETE FROM pr_employees WHERE id = ?', params: [id] },
   ]);
 }
@@ -504,7 +539,12 @@ export function statutoryDefaults(kind: string): Partial<PayHeadInput> {
       ],
       statutory: 'PT',
     };
+  if (kind === 'IT') return { ph_type: "Employees' Statutory Deductions", calc_type: IT_CALC, statutory: 'IT', rounding: 'Upward Rounding', rounding_limit: 100 };
   return {};
+}
+
+export function gratuityDefaults(): Partial<PayHeadInput> {
+  return { ph_type: 'Gratuity', calc_type: GRATUITY_CALC };
 }
 
 export type PayHeadInput = Partial<Omit<PayHead, 'id' | 'guid' | 'ledger_id' | 'payable_ledger_id' | 'affect_net' | 'gratuity'>> & {
@@ -547,12 +587,15 @@ export async function defaultPayHeadGroupId(db: Db, phType: string): Promise<num
 function payHeadValues(input: PayHeadInput) {
   const ph_type = inList(input.ph_type, PAY_HEAD_TYPES, 'Pay head type');
   const side = payHeadSide(ph_type);
-  const calc_type = inList(input.calc_type ?? 'As User Defined Value', CALC_TYPES, 'Calculation type');
+  const calc_type = ph_type === 'Gratuity' && (!input.calc_type || input.calc_type === GRATUITY_CALC) ? GRATUITY_CALC : inList(input.calc_type ?? 'As User Defined Value', ALL_CALC_TYPES, 'Calculation type');
+  if (calc_type === GRATUITY_CALC && ph_type !== 'Gratuity') throw new CoreError('invalid', 'Gratuity calculation is only for gratuity pay heads');
+  if (calc_type === IT_CALC && ph_type !== "Employees' Statutory Deductions") throw new CoreError('invalid', "Income tax pay head must be of type Employees' Statutory Deductions");
   const calc_period = inList(input.calc_period ?? 'Months', CALC_PERIODS, 'Calculation period');
   const basis = inList(input.basis ?? BASIS_OPTIONS[0], BASIS_OPTIONS, 'Basis of calculation');
   const compute_basis = inList(input.compute_basis ?? COMPUTE_BASES[0], COMPUTE_BASES, 'Compute basis');
   const rounding = inList(input.rounding ?? 'Not Applicable', ROUNDING_METHODS, 'Rounding method');
-  const statutory = inList(input.statutory ?? '', STATUTORY_KINDS, 'Statutory kind');
+  const statutory = calc_type === IT_CALC ? 'IT' : inList(input.statutory ?? '', STATUTORY_KINDS, 'Statutory kind');
+  if (statutory === 'IT' && calc_type !== IT_CALC) throw new CoreError('invalid', `Income tax pay head must use ${IT_CALC}`);
   if ((calc_type === 'On Attendance' || calc_type === 'On Production') && !input.attendance_type_id) throw new CoreError('invalid', 'Select the attendance/production type');
   if (basis === 'User Defined Calendar Type' && calc_type === 'On Attendance' && !input.basis_unit_id) throw new CoreError('invalid', 'Select the calendar type');
   if (calc_type === 'As Computed Value' && compute_basis === 'On Specified Formula' && !(input.formula?.length)) throw new CoreError('invalid', 'Specify the pay heads to compute on');
@@ -747,11 +790,23 @@ function roundTo(v: number, method: string, limit: number): number {
   return r * limit;
 }
 
-export async function computeSalary(db: Db, employeeId: number, date: string): Promise<PayrollLine[]> {
+export async function computeSalary(db: Db, employeeId: number, date: string, opts: { skipTax?: boolean } = {}): Promise<PayrollLine[]> {
   const structure = await effectiveStructure(db, employeeId, date);
   if (!structure.length) return [];
   const heads = new Map((await payHeads(db)).map((p) => [p.id, p]));
   const b = monthBounds(date);
+  const inStructure = structure.map((s) => heads.get(s.pay_head_id)).filter((h): h is PayHead => !!h);
+  const hasTax = inStructure.some((h) => h.calc_type === IT_CALC);
+  const tdsMonth = hasTax && !opts.skipTax ? (await incomeTaxComputation(db, employeeId, date)).monthly_tds : 0;
+  const gratHeads = inStructure.filter((h) => h.calc_type === GRATUITY_CALC);
+  const provided = new Map<number, number>();
+  let gratTerms: { joining: string; leaving: string; fixed_term: boolean } | null = null;
+  if (gratHeads.length) {
+    const emp = (await employee(db, employeeId))!;
+    const t = await employeeTerms(db, employeeId);
+    gratTerms = { joining: emp.date_of_joining, leaving: t.date_of_leaving, fixed_term: !!t.fixed_term };
+    for (const h of gratHeads) provided.set(h.id, await gratuityProvided(db, employeeId, h.id, b.from));
+  }
   const att = new Map<number, number>();
   for (const r of await db.select<{ type_id: number; v: number }>('SELECT type_id, SUM(value) AS v FROM pr_attendance WHERE employee_id = ? AND date BETWEEN ? AND ? GROUP BY type_id', [employeeId, b.from, b.to])) att.set(r.type_id, r.v);
   const rates = new Map(structure.map((s) => [s.pay_head_id, s]));
@@ -766,7 +821,14 @@ export async function computeSalary(db: Db, employeeId: number, date: string): P
     if (!ph || !s || busy[k].has(id)) return 0;
     busy[k].add(id);
     let v = 0;
-    if (ph.calc_type === 'Flat Rate' || ph.calc_type === 'As User Defined Value') v = s.rate;
+    if (ph.calc_type === IT_CALC) v = tdsMonth;
+    else if (ph.calc_type === GRATUITY_CALC) {
+      let wages = 0;
+      for (const o of structure) if (heads.get(o.pay_head_id)?.gratuity && o.pay_head_id !== id) wages += valueOf(o.pay_head_id, true);
+      const asOn = gratTerms!.leaving && gratTerms!.leaving < b.to ? gratTerms!.leaving : b.to;
+      const g = gratTerms!.joining ? computeGratuity({ wages, joining: gratTerms!.joining, as_on: asOn, fixed_term: gratTerms!.fixed_term }) : null;
+      v = g ? Math.max(0, g.accrued - (provided.get(id) ?? 0)) : 0;
+    } else if (ph.calc_type === 'Flat Rate' || ph.calc_type === 'As User Defined Value') v = s.rate;
     else if (ph.calc_type === 'On Attendance') {
       const basisMilli = ph.basis === 'User Defined Calendar Type' && ph.basis_unit_id ? att.get(ph.basis_unit_id) ?? 0 : b.days * QTY_SCALE;
       const got = full ? basisMilli : att.get(ph.attendance_type_id!) ?? 0;
@@ -1135,4 +1197,298 @@ export async function paySlip(db: Db, employeeId: number, from: string, to: stri
 export async function isPayrollVoucher(db: Db, voucherId: number): Promise<boolean> {
   await ensurePayroll(db);
   return !!(await one(db, 'SELECT 1 FROM pr_vouchers WHERE voucher_id = ?', [voucherId]));
+}
+
+export interface EmployeeTerms {
+  employee_id: number;
+  fixed_term: number;
+  date_of_leaving: string;
+}
+
+export async function employeeTerms(db: Db, employeeId: number): Promise<EmployeeTerms> {
+  await ensurePayroll(db);
+  return (await one<EmployeeTerms>(db, 'SELECT * FROM pr_employee_terms WHERE employee_id = ?', [employeeId])) ?? { employee_id: employeeId, fixed_term: 0, date_of_leaving: '' };
+}
+
+export async function saveEmployeeTerms(db: Db, employeeId: number, input: { fixed_term?: boolean | number; date_of_leaving?: string }): Promise<EmployeeTerms> {
+  if (!(await employee(db, employeeId))) throw new CoreError('not_found', 'Employee not found');
+  const cur = await employeeTerms(db, employeeId);
+  const leaving = input.date_of_leaving ?? cur.date_of_leaving;
+  if (leaving && !/^\d{4}-\d{2}-\d{2}$/.test(leaving)) throw new CoreError('invalid', 'Date of leaving is invalid');
+  await db.batch([
+    { sql: 'INSERT OR REPLACE INTO pr_employee_terms (employee_id, fixed_term, date_of_leaving) VALUES (?, ?, ?)', params: [employeeId, bool(input.fixed_term ?? cur.fixed_term), leaving] },
+  ]);
+  return employeeTerms(db, employeeId);
+}
+
+export interface EmployeeTax {
+  employee_id: number;
+  fy_start: string;
+  regime: TaxRegime;
+  hra_exemption: number;
+  sec80c: number;
+  sec80ccd1b: number;
+  sec80d: number;
+  other_deductions: number;
+  home_loan_interest: number;
+  other_income: number;
+  previous_salary: number;
+  previous_tds: number;
+}
+
+const TAX_INTS = ['hra_exemption', 'sec80c', 'sec80ccd1b', 'sec80d', 'other_deductions', 'home_loan_interest', 'other_income', 'previous_salary', 'previous_tds'] as const;
+
+export function fyOf(date: string): { from: string; to: string } {
+  const y = Number(date.slice(0, 4));
+  const start = Number(date.slice(5, 7)) >= 4 ? y : y - 1;
+  return { from: `${start}-04-01`, to: `${start + 1}-03-31` };
+}
+
+export async function employeeTax(db: Db, employeeId: number, fyStart: string): Promise<EmployeeTax> {
+  await ensurePayroll(db);
+  const row = await one<EmployeeTax>(db, 'SELECT * FROM pr_employee_tax WHERE employee_id = ? AND fy_start = ?', [employeeId, fyStart]);
+  if (row) return row;
+  const prev = await one<{ regime: TaxRegime }>(db, 'SELECT regime FROM pr_employee_tax WHERE employee_id = ? AND fy_start < ? ORDER BY fy_start DESC LIMIT 1', [employeeId, fyStart]);
+  return { employee_id: employeeId, fy_start: fyStart, regime: prev?.regime ?? 'new', hra_exemption: 0, sec80c: 0, sec80ccd1b: 0, sec80d: 0, other_deductions: 0, home_loan_interest: 0, other_income: 0, previous_salary: 0, previous_tds: 0 };
+}
+
+export async function saveEmployeeTax(db: Db, employeeId: number, fyStart: string, input: Partial<Omit<EmployeeTax, 'employee_id' | 'fy_start'>>): Promise<EmployeeTax> {
+  if (!(await employee(db, employeeId))) throw new CoreError('not_found', 'Employee not found');
+  if (!/^\d{4}-04-01$/.test(fyStart)) throw new CoreError('invalid', 'Financial year must start on 1 April');
+  const cur = await employeeTax(db, employeeId, fyStart);
+  const regime = input.regime ?? cur.regime;
+  if (regime !== 'new' && regime !== 'old') throw new CoreError('invalid', 'Tax regime is not valid');
+  const ints = TAX_INTS.map((k) => {
+    const v = Math.round(Number(input[k] ?? cur[k]) || 0);
+    if (v < 0) throw new CoreError('invalid', 'Amounts cannot be negative');
+    return v;
+  });
+  await db.batch([
+    {
+      sql: `INSERT OR REPLACE INTO pr_employee_tax (employee_id, fy_start, regime, ${TAX_INTS.join(', ')}) VALUES (?, ?, ?, ${TAX_INTS.map(() => '?').join(', ')})`,
+      params: [employeeId, fyStart, regime, ...ints],
+    },
+  ]);
+  return employeeTax(db, employeeId, fyStart);
+}
+
+export async function taxRules(db: Db, fyStart: string, regime: TaxRegime): Promise<TaxRules> {
+  await ensurePayroll(db);
+  const row = await one<{ data: string }>(db, 'SELECT data FROM pr_tax_rules WHERE fy_start = ? AND regime = ?', [fyStart, regime]);
+  return row ? { ...defaultTaxRules(fyStart, regime), ...JSON.parse(row.data), fy_start: fyStart, regime } : defaultTaxRules(fyStart, regime);
+}
+
+export async function saveTaxRules(db: Db, rules: TaxRules): Promise<TaxRules> {
+  await ensurePayroll(db);
+  if (!/^\d{4}-04-01$/.test(rules.fy_start)) throw new CoreError('invalid', 'Financial year must start on 1 April');
+  if (rules.regime !== 'new' && rules.regime !== 'old') throw new CoreError('invalid', 'Tax regime is not valid');
+  const slabs = [...rules.slabs].filter((s) => s.from >= 0 && s.rate_bp >= 0).sort((a, b) => a.from - b.from);
+  if (!slabs.length || slabs[0].from !== 0) throw new CoreError('invalid', 'The first slab must start from zero');
+  if (new Set(slabs.map((s) => s.from)).size !== slabs.length) throw new CoreError('invalid', 'Slab limits must be different');
+  const nums = [rules.standard_deduction, rules.rebate_limit, rules.rebate_max, rules.cess_bp, rules.limit_80c, rules.limit_80ccd1b, rules.limit_home_loan];
+  if (nums.some((n) => !Number.isFinite(n) || n < 0)) throw new CoreError('invalid', 'Values cannot be negative');
+  const data = { ...rules, slabs };
+  await db.batch([{ sql: 'INSERT OR REPLACE INTO pr_tax_rules (fy_start, regime, data) VALUES (?, ?, ?)', params: [rules.fy_start, rules.regime, JSON.stringify(data)] }]);
+  return taxRules(db, rules.fy_start, rules.regime);
+}
+
+export async function resetTaxRules(db: Db, fyStart: string, regime: TaxRegime): Promise<TaxRules> {
+  await ensurePayroll(db);
+  await db.batch([{ sql: 'DELETE FROM pr_tax_rules WHERE fy_start = ? AND regime = ?', params: [fyStart, regime] }]);
+  return taxRules(db, fyStart, regime);
+}
+
+async function gratuityProvided(db: Db, employeeId: number, payHeadId: number | null, before: string): Promise<number> {
+  const r = await one<{ a: number }>(
+    db,
+    `SELECT COALESCE(SUM(l.amount), 0) AS a FROM pr_voucher_lines l JOIN vouchers v ON v.id = l.voucher_id JOIN pr_pay_heads p ON p.id = l.pay_head_id
+     WHERE l.employee_id = ? AND v.date < ? AND v.cancelled = 0 AND ${payHeadId ? 'l.pay_head_id = ?' : `p.calc_type = '${GRATUITY_CALC}'`}`,
+    payHeadId ? [employeeId, before, payHeadId] : [employeeId, before]
+  );
+  return r?.a ?? 0;
+}
+
+export interface TaxMonth {
+  month: string;
+  basis: 'Actual' | 'Projected' | '';
+  salary: number;
+  pf: number;
+  pt: number;
+  tds: number;
+}
+
+export interface TaxComputation {
+  employee: Employee;
+  fy_start: string;
+  fy_end: string;
+  act: string;
+  regime: TaxRegime;
+  regime_label: string;
+  computed_for: string;
+  age: number;
+  months: TaxMonth[];
+  salary: number;
+  previous_salary: number;
+  gross_salary: number;
+  hra_exemption: number;
+  balance: number;
+  standard_deduction: number;
+  professional_tax: number;
+  income_from_salary: number;
+  other_income: number;
+  home_loan_interest: number;
+  gross_total_income: number;
+  deductions: { label: string; declared: number; allowed: number }[];
+  total_deductions: number;
+  total_income: number;
+  tax: TaxOnIncome;
+  deducted: number;
+  previous_tds: number;
+  balance_tax: number;
+  remaining_months: number;
+  monthly_tds: number;
+}
+
+const monthKeys = (fyStart: string) => Array.from({ length: 12 }, (_, i) => addMonthsIso(fyStart, i).slice(0, 7));
+
+export async function incomeTaxComputation(db: Db, employeeId: number, date: string): Promise<TaxComputation> {
+  await ensurePayroll(db);
+  const emp = await employee(db, employeeId);
+  if (!emp) throw new CoreError('not_found', 'Employee not found');
+  const fy = fyOf(date);
+  const decl = await employeeTax(db, employeeId, fy.from);
+  const rules = await taxRules(db, fy.from, decl.regime);
+  const old = decl.regime === 'old';
+  const terms = await employeeTerms(db, employeeId);
+  const heads = new Map((await payHeads(db)).map((p) => [p.id, p]));
+  const cur = date.slice(0, 7);
+  const actual = await db.select<{ m: string; pay_head_id: number; amount: number }>(
+    `SELECT substr(v.date, 1, 7) AS m, l.pay_head_id, SUM(l.amount) AS amount FROM pr_voucher_lines l JOIN vouchers v ON v.id = l.voucher_id
+     WHERE l.employee_id = ? AND v.date BETWEEN ? AND ? AND v.cancelled = 0 GROUP BY m, l.pay_head_id`,
+    [employeeId, fy.from, fy.to]
+  );
+  const classify = (ph: PayHead | undefined, amount: number, acc: TaxMonth) => {
+    if (!ph || !amount) return;
+    if (TAXABLE_EARNING_TYPES.includes(ph.ph_type)) acc.salary += amount;
+    else if (ph.statutory === 'PF' && payHeadSide(ph.ph_type) === 'ded') acc.pf += amount;
+    else if (ph.statutory === 'PT') acc.pt += amount;
+    else if (ph.statutory === 'IT' || ph.calc_type === IT_CALC) acc.tds += amount;
+  };
+  const months: TaxMonth[] = [];
+  for (const m of monthKeys(fy.from)) {
+    const row: TaxMonth = { month: m, basis: '', salary: 0, pf: 0, pt: 0, tds: 0 };
+    const lines = actual.filter((a) => a.m === m);
+    const end = monthBounds(`${m}-01`).to;
+    if (m < cur && lines.length) {
+      row.basis = 'Actual';
+      for (const l of lines) classify(heads.get(l.pay_head_id), l.amount, row);
+    } else if ((!emp.date_of_joining || emp.date_of_joining <= end) && (!terms.date_of_leaving || terms.date_of_leaving >= `${m}-01`)) {
+      const calc = await computeSalary(db, employeeId, end, { skipTax: true });
+      if (calc.length) row.basis = 'Projected';
+      for (const l of calc) classify(heads.get(l.pay_head_id), l.gross, row);
+      row.tds = 0;
+    }
+    months.push(row);
+  }
+  const sum = (k: 'salary' | 'pf' | 'pt' | 'tds') => months.reduce((s, x) => s + x[k], 0);
+  const salary = sum('salary');
+  const gross = salary + decl.previous_salary;
+  const hra = old ? Math.min(decl.hra_exemption, gross) : 0;
+  const balance = gross - hra;
+  const std = Math.min(rules.standard_deduction, balance);
+  const pt = old ? Math.min(sum('pt'), Math.max(0, balance - std)) : 0;
+  const incomeSalary = Math.max(0, balance - std - pt);
+  const homeLoan = old ? Math.min(decl.home_loan_interest, rules.limit_home_loan || decl.home_loan_interest) : 0;
+  const gti = Math.max(0, incomeSalary + decl.other_income - homeLoan);
+  const deductions = old
+    ? [
+        { label: 'Investments (80C)', declared: decl.sec80c + sum('pf'), allowed: Math.min(decl.sec80c + sum('pf'), rules.limit_80c) },
+        { label: 'NPS (80CCD(1B))', declared: decl.sec80ccd1b, allowed: Math.min(decl.sec80ccd1b, rules.limit_80ccd1b) },
+        { label: 'Health insurance (80D)', declared: decl.sec80d, allowed: decl.sec80d },
+        { label: 'Other deductions', declared: decl.other_deductions, allowed: decl.other_deductions },
+      ]
+    : [];
+  const totalDed = Math.min(gti, deductions.reduce((s, d) => s + d.allowed, 0));
+  const totalIncome = roundToTen(Math.max(0, gti - totalDed));
+  const age = ageOn(emp.date_of_birth, fy.to);
+  const tax = taxOnIncome(totalIncome, rules, old ? age : 0);
+  const deducted = months.filter((m) => m.month < cur).reduce((s, m) => s + m.tds, 0);
+  const remaining = Math.max(1, months.filter((m) => m.month >= cur).length);
+  const balanceTax = Math.max(0, tax.total - deducted - decl.previous_tds);
+  const monthly = date > fy.to ? 0 : Math.ceil(balanceTax / remaining / 100) * 100;
+  return {
+    employee: emp,
+    fy_start: fy.from,
+    fy_end: fy.to,
+    act: rules.act,
+    regime: decl.regime,
+    regime_label: regimeLabel(decl.regime),
+    computed_for: cur,
+    age,
+    months,
+    salary,
+    previous_salary: decl.previous_salary,
+    gross_salary: gross,
+    hra_exemption: hra,
+    balance,
+    standard_deduction: std,
+    professional_tax: pt,
+    income_from_salary: incomeSalary,
+    other_income: decl.other_income,
+    home_loan_interest: homeLoan,
+    gross_total_income: gti,
+    deductions,
+    total_deductions: totalDed,
+    total_income: totalIncome,
+    tax,
+    deducted,
+    previous_tds: decl.previous_tds,
+    balance_tax: balanceTax,
+    remaining_months: remaining,
+    monthly_tds: monthly,
+  };
+}
+
+export interface GratuityRow {
+  employee_id: number;
+  employee: string;
+  date_of_joining: string;
+  date_of_leaving: string;
+  fixed_term: boolean;
+  wages: number;
+  span: ServiceSpan;
+  result: GratuityResult | null;
+  provided: number;
+  difference: number;
+}
+
+export async function gratuityReport(db: Db, asOn: string): Promise<GratuityRow[]> {
+  await ensurePayroll(db);
+  const heads = new Map((await payHeads(db)).map((p) => [p.id, p]));
+  const out: GratuityRow[] = [];
+  for (const e of await employees(db)) {
+    const t = await employeeTerms(db, e.id);
+    const until = t.date_of_leaving && t.date_of_leaving < asOn ? t.date_of_leaving : asOn;
+    const lines = await computeSalary(db, e.id, until, { skipTax: true });
+    const wages = lines.filter((l) => heads.get(l.pay_head_id)?.gratuity).reduce((s, l) => s + l.gross, 0);
+    const result = e.date_of_joining && e.date_of_joining <= until ? computeGratuity({ wages, joining: e.date_of_joining, as_on: until, fixed_term: !!t.fixed_term }) : null;
+    const provided = await gratuityProvided(db, e.id, null, addDaysIso(asOn, 1));
+    out.push({
+      employee_id: e.id,
+      employee: e.name,
+      date_of_joining: e.date_of_joining,
+      date_of_leaving: t.date_of_leaving,
+      fixed_term: !!t.fixed_term,
+      wages,
+      span: result?.span ?? { years: 0, months: 0, days: 0, total_months: 0 },
+      result,
+      provided,
+      difference: (result?.accrued ?? 0) - provided,
+    });
+  }
+  return out;
+}
+
+function addDaysIso(iso: string, n: number): string {
+  return new Date(Date.parse(iso + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
 }

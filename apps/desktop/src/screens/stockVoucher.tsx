@@ -1,7 +1,8 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { fmtAmount, fmtQty, godowns as loadGodowns, lineAmount, parseAmount, parseQty, pendingDocs, stockItems as loadItems, type Godown, type Ledger, type PendingDoc, type StockItem } from '@tallybook/core';
+import { fmtAmount, fmtQty, godowns as loadGodowns, lineAmount, parseAmount, parseQty, pendingDocs, stockItems as loadItems, type BatchAllocInput, type Godown, type Ledger, type PendingDoc, type StockItem } from '@tallybook/core';
 import { PickerInput, type Opt } from '../ui/PickerInput.tsx';
 import { useStore } from '../store.tsx';
+import { BatchAllocationDialog } from './Batches.tsx';
 import { PARTY_ROOTS, isUnder } from '../lib.ts';
 import type { BodyHandle, BodyProps } from './voucherParts.tsx';
 
@@ -14,6 +15,7 @@ interface Line {
   qty: string;
   rate: string;
   against?: number;
+  batches?: BatchAllocInput[];
 }
 
 const WITH_PARTY = ['Delivery Note', 'Receipt Note', 'Sales Order', 'Purchase Order', 'Rejection In', 'Rejection Out'];
@@ -62,7 +64,7 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
       initial.items.map((it) => {
         const item = items.find((x) => x.id === it.item_id) ?? null;
         const g = houses.find((x) => x.id === it.godown_id) ?? houses[0] ?? null;
-        return { item, text: item?.name ?? '', godown: g, godownText: g?.name ?? '', side: it.qty < 0 ? 'Out' : 'In', qty: fmtQty(Math.abs(it.qty), 0), rate: fmtAmount(it.rate) };
+        return { item, text: item?.name ?? '', godown: g, godownText: g?.name ?? '', side: it.qty < 0 ? 'Out' : 'In', qty: fmtQty(Math.abs(it.qty), 0), rate: fmtAmount(it.rate), batches: it.batches };
       })
     );
   }, [initial, items, houses]);
@@ -89,6 +91,9 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
   };
   const firstCell = withParty ? 'party' : 'i0-0';
 
+  const [batchFor, setBatchFor] = useState<number | null>(null);
+  const moves = !physical && !parent.endsWith('Order');
+  const needsBatch = (l: Line) => moves && !!company?.batches_enabled && !!l.item?.maintain_batches;
   const signFor = (l: Line) => (journal ? (l.side === 'Out' ? -1 : 1) : OUTWARD.includes(parent) ? -1 : 1);
 
   useImperativeHandle(
@@ -110,7 +115,13 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
           return { item_id: l.item!.id, godown_id: l.godown?.id ?? 1, qty: physical ? q : signFor(l) * q, rate, amount: lineAmount(q, rate) };
         });
         const track = rows.flatMap((l, index) => (l.against ? [{ index, against: l.against, qty: parseQty(l.qty)! }] : []));
-        return { entries: [], party_id: party?.id ?? null, stock, track };
+        const missing = rows.find((l) => needsBatch(l) && l.batches?.reduce((a, b) => a + b.qty, 0) !== parseQty(l.qty));
+        if (missing) {
+          toast(`Allocate batches for ${missing.item!.name}`, 'err');
+          return null;
+        }
+        const batches = rows.flatMap((l, index) => (needsBatch(l) && l.batches?.length ? [{ index, allocs: l.batches }] : []));
+        return { entries: [], party_id: party?.id ?? null, stock, track, batches };
       },
       reset() {
         dirty.current = false;
@@ -125,7 +136,7 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
       },
       isDirty: () => dirty.current,
     }),
-    [firstCell, focus, houses, parent, party, physical, toast, withParty, journal]
+    [company, firstCell, focus, houses, parent, party, physical, toast, withParty, journal]
   );
   useEffect(() => {
     if (!initial?.items?.length) focus(firstCell);
@@ -288,8 +299,11 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
                   if (e.key === 'Enter') {
                     e.preventDefault();
                     e.stopPropagation();
-                    if (!parseQty(l.qty)) return toast('Enter a valid quantity', 'err');
-                    focus(`i${i}-2`);
+                    const q = parseQty(l.qty);
+                    if (!q) return toast('Enter a valid quantity', 'err');
+                    if (l.batches && l.batches.reduce((a, b) => a + b.qty, 0) !== q) update(i, { batches: undefined });
+                    if (needsBatch(l)) setBatchFor(i);
+                    else focus(`i${i}-2`);
                   } else if (e.key === 'Backspace' && l.qty === '') {
                     e.preventDefault();
                     e.stopPropagation();
@@ -322,6 +336,27 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
           );
         })}
       </div>
+      {batchFor !== null && lines[batchFor]?.item && (
+        <BatchAllocationDialog
+          item={lines[batchFor].item!}
+          godownId={lines[batchFor].godown?.id ?? 1}
+          qty={parseQty(lines[batchFor].qty) ?? 0}
+          outward={signFor(lines[batchFor]) < 0}
+          asOf={props.date}
+          initial={lines[batchFor].batches}
+          onCancel={() => {
+            const i = batchFor;
+            setBatchFor(null);
+            focus(`i${i}-1`);
+          }}
+          onDone={(allocs) => {
+            const i = batchFor;
+            update(i, { batches: allocs });
+            setBatchFor(null);
+            focus(`i${i}-2`);
+          }}
+        />
+      )}
     </div>
   );
 });

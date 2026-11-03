@@ -342,3 +342,16 @@ test('price levels, price lists, revision and retrieval', async () => {
   await assert.rejects(() => deletePriceLevel(books.db, retail.id), /cannot be deleted/);
   await deletePriceLevel(books.db, whole.id);
 });
+
+test('batches split one line value by quantity', async () => {
+  const { books, ty, purch, supp, nos } = await setup();
+  const it = await createStockItem(books.db, { name: 'Tabs', unit_id: nos, maintain_batches: 1 });
+  const buy = await createItemInvoice(books, { kind: 'Purchase', type_id: ty.get('Purchase')!, date: '2026-05-01', party_id: supp, lines: [{ item_id: it.id, ledger_id: purch, qty: 10_000, rate: 25_00 }] });
+  await saveBatchAllocations(books.db, buy.stock[0].id, [{ batch: 'B1', qty: 6_000 }, { batch: 'B2', qty: 4_000 }]);
+  const s = await batchSummary(books.db, it.id, '2026-12-31');
+  const by = new Map(s.rows.map((r) => [r.batch, r]));
+  assert.equal(by.get('B1')!.value, 150_00);
+  assert.equal(by.get('B2')!.value, 100_00);
+  assert.equal(by.get('B1')!.rate, 25_00);
+  assert.equal(s.total_value, 250_00);
+});

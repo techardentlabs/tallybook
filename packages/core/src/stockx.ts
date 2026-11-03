@@ -1433,9 +1433,9 @@ export interface BatchBalance {
 }
 
 export async function batchBalances(db: Db, itemId: number | null, asOf: string, godownId?: number): Promise<BatchBalance[]> {
-  const rows = await db.select<{ item_id: number; item: string; unit: string; godown_id: number; godown: string; batch: string; mfg_date: string; expiry_date: string; qty: number; amount: number; rate: number }>(
+  const rows = await db.select<{ item_id: number; item: string; unit: string; godown_id: number; godown: string; batch: string; mfg_date: string; expiry_date: string; qty: number; amount: number; mqty: number; rate: number }>(
     `SELECT b.item_id, i.name AS item, u.symbol AS unit, COALESCE(b.godown_id, 1) AS godown_id, COALESCE(g.name, '') AS godown, b.batch, b.mfg_date, b.expiry_date, b.qty,
-            CASE WHEN b.movement_id IS NULL THEN 0 ELSE m.amount END AS amount, CASE WHEN b.movement_id IS NULL THEN i.opening_rate ELSE m.rate END AS rate
+            CASE WHEN b.movement_id IS NULL THEN 0 ELSE m.amount END AS amount, COALESCE(m.qty, 0) AS mqty, CASE WHEN b.movement_id IS NULL THEN i.opening_rate ELSE m.rate END AS rate
      FROM stockx_batches b JOIN stock_items i ON i.id = b.item_id JOIN units u ON u.id = i.unit_id LEFT JOIN godowns g ON g.id = b.godown_id
      LEFT JOIN stock_movements m ON m.id = b.movement_id LEFT JOIN vouchers v ON v.id = m.voucher_id LEFT JOIN voucher_types t ON t.id = v.type_id
      WHERE (b.movement_id IS NULL OR (v.cancelled = 0 AND v.date <= ? AND t.parent NOT IN ${ORDER_PARENTS}))${itemId ? ' AND b.item_id = ' + Number(itemId) : ''}${godownId ? ' AND COALESCE(b.godown_id, 1) = ' + Number(godownId) : ''}
@@ -1449,7 +1449,7 @@ export async function batchBalances(db: Db, itemId: number | null, asOf: string,
     a.qty += r.qty;
     if (r.qty > 0) {
       a.in_qty += r.qty;
-      a.in_value += r.amount || Math.round((r.qty * r.rate) / QTY_SCALE);
+      a.in_value += r.amount && r.mqty ? Math.round((Math.abs(r.amount) * r.qty) / Math.abs(r.mqty)) : Math.round((r.qty * r.rate) / QTY_SCALE);
     }
     if (!a.mfg_date) a.mfg_date = r.mfg_date;
     if (!a.expiry_date) a.expiry_date = r.expiry_date;

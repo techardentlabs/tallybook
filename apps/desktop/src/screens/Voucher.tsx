@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { clearTracking, trackAgainst, canCurrent, ensureDutyLedger, recordDeduction, saveEntryAllocations, type AllocationInput, type TdsPlan, bankAlloc, bankConfig, ensureBanking, saveBankAlloc, tdsCompany, STOCK_VOUCHER_TYPES, fmtDate, parseDate, weekday, todayIso, type BillInput, type Group, type Ledger, type VoucherRow, type VoucherType } from '@tallybook/core';
+import { voucherForex, saveVoucherForex, type EntryForexInput, isMfgJournal, mfgVoucherTypes, type VoucherClass, voucherAllocations, type AllocationRow, batchAllocations, saveBatchAllocations, clearTracking, trackAgainst, canCurrent, ensureDutyLedger, recordDeduction, saveEntryAllocations, type AllocationInput, type TdsPlan, bankAlloc, bankConfig, ensureBanking, saveBankAlloc, tdsCompany, STOCK_VOUCHER_TYPES, fmtDate, parseDate, weekday, todayIso, type BatchAllocInput, type BillInput, type Group, type Ledger, type VoucherRow, type VoucherType } from '@tallybook/core';
 import { useScreen } from '../registry.ts';
 import { useStore } from '../store.tsx';
+import { registerUnsaved } from '../unsaved.ts';
+import { ManufacturingJournalScreen, ChangeVoucherMode } from './Manufacturing.tsx';
+import { VoucherClassPicker, useVoucherClasses } from './VoucherClass.tsx';
 import { useNav } from '../nav.tsx';
 import { useDialogs } from '../ui/Dialogs.tsx';
 import { BillDialog } from '../ui/BillDialog.tsx';
@@ -40,16 +43,16 @@ const BANK_GROUPS = ['Bank Accounts', 'Bank OD A/c'];
 const BANK_VOUCHERS = ['Payment', 'Receipt', 'Contra'];
 let lastDate = '';
 
-function toInitial(v: VoucherRow, ledgers: Ledger[], groups: Group[], invoice: boolean): InitialData {
+function toInitial(v: VoucherRow, ledgers: Ledger[], groups: Group[], invoice: boolean, batchMap: Map<number, BatchAllocInput[]>, forexMap: Map<number, EntryForexInput> = new Map()): InitialData {
   if (v.stock?.length) {
     return {
       party_id: v.party_id,
       place_of_supply: v.place_of_supply,
-      items: v.stock.map((m) => ({ item_id: m.item_id, godown_id: m.godown_id ?? null, ledgerId: m.ledger_id ?? null, qty: m.qty, rate: m.rate, tracked: m.tracked })),
+      items: v.stock.map((m) => ({ item_id: m.item_id, godown_id: m.godown_id ?? null, ledgerId: m.ledger_id ?? null, qty: m.qty, rate: m.rate, tracked: m.tracked, batches: batchMap.get(m.id) })),
     };
   }
   if (!invoice) {
-    return { rows: v.entries.map((e) => ({ side: e.amount > 0 ? 'Dr' : 'Cr', ledgerId: e.ledger_id, amount: e.amount, bills: e.bills })) };
+    return { rows: v.entries.map((e) => ({ side: e.amount > 0 ? 'Dr' : 'Cr', ledgerId: e.ledger_id, amount: e.amount, bills: e.bills, forex: forexMap.get(e.id) })) };
   }
   const output = v.parent === 'Sales' || v.parent === 'Credit Note';
   const lines = v.entries
@@ -79,6 +82,16 @@ export function VoucherScreen({ typeName, voucherId, duplicateFrom }: { typeName
   const [ledgers, setLedgers] = useState<Ledger[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [source, setSource] = useState<VoucherRow | null | undefined>(voucherId || duplicateFrom ? undefined : null);
+  const [batchMap, setBatchMap] = useState(() => new Map<number, BatchAllocInput[]>());
+  const [forexMap, setForexMap] = useState(() => new Map<number, EntryForexInput>());
+  const [mfg, setMfg] = useState<{ voucher: boolean; types: Set<number> } | null>(null);
+  useEffect(() => {
+    void (async () => {
+      const voucher = voucherId ? await isMfgJournal(books.db, voucherId).catch(() => false) : false;
+      const types = new Set(await mfgVoucherTypes(books.db).then((t) => t.map((x) => x.id)).catch(() => [] as number[]));
+      setMfg({ voucher, types });
+    })();
+  }, [books, voucherId, version]);
 
   useEffect(() => {
     void Promise.all([books.voucherTypes(), books.ledgers(), books.groups()]).then(([t, l, g]) => {
@@ -91,15 +104,29 @@ export function VoucherScreen({ typeName, voucherId, duplicateFrom }: { typeName
   useEffect(() => {
     const id = voucherId ?? duplicateFrom;
     if (!id) return;
-    void books.voucher(id).then(setSource);
+    void books.voucher(id).then(async (v) => {
+      const map = new Map<number, BatchAllocInput[]>();
+      if (v && voucherId) for (const m of v.stock) {
+        const a = await batchAllocations(books.db, m.id);
+        if (a.length) map.set(m.id, a.map((x) => ({ batch: x.batch, mfg_date: x.mfg_date, expiry_date: x.expiry_date, qty: Math.abs(x.qty) })));
+      }
+      setBatchMap(map);
+      if (v) {
+        const fx = await voucherForex(books.db, v.id).catch(() => []);
+        setForexMap(new Map(fx.map((f) => [f.entry_id, { currency_id: f.currency_id, foreign_amount: f.foreign_amount, rate_e4: f.rate_e4, rate_kind: f.rate_kind }])));
+      }
+      setSource(v);
+    });
   }, [books, voucherId, duplicateFrom]);
 
-  if (!types.length || !company || source === undefined) return null;
+  if (!types.length || !company || source === undefined || !mfg) return null;
   const type = types.find((t) => t.name === (source?.type ?? typeName)) ?? types.find((t) => t.name === 'Payment')!;
-  return <Editor key={`${type.id}-${voucherId ?? 'new'}`} type={type} ledgers={ledgers} groups={groups} source={source} editing={!!voucherId} />;
+  if (mfg.voucher && voucherId) return <ManufacturingJournalScreen voucherId={voucherId} />;
+  if (!voucherId && !duplicateFrom && mfg.types.has(type.id)) return <ManufacturingJournalScreen typeId={type.id} />;
+  return <Editor key={`${type.id}-${voucherId ?? 'new'}`} type={type} ledgers={ledgers} groups={groups} source={source} batchMap={batchMap} forexMap={forexMap} editing={!!voucherId} />;
 }
 
-function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType; ledgers: Ledger[]; groups: Group[]; source: VoucherRow | null; editing: boolean }) {
+function Editor({ type, ledgers, groups, source, batchMap, forexMap, editing }: { type: VoucherType; ledgers: Ledger[]; groups: Group[]; source: VoucherRow | null; batchMap: Map<number, BatchAllocInput[]>; forexMap: Map<number, EntryForexInput>; editing: boolean }) {
   const { books, company, bump, toast } = useStore();
   const nav = useNav();
   const dialogs = useDialogs();
@@ -108,7 +135,7 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
   const startInvoice = gst && (source ? looksLikeInvoice(source, ledgers, groups) : true);
   const [invoice, setInvoice] = useState(startInvoice);
   const [resetKey, setResetKey] = useState(0);
-  const initial = useMemo(() => (source ? toInitial(source, ledgers, groups, invoice) : undefined), [source, ledgers, groups, invoice]);
+  const initial = useMemo(() => (source ? toInitial(source, ledgers, groups, invoice, batchMap, forexMap) : undefined), [source, ledgers, groups, invoice, batchMap, forexMap]);
 
   const defaultDate = () => {
     if (source) return source.date;
@@ -122,10 +149,21 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
   const [reference, setReference] = useState(source?.reference ?? '');
   const [narration, setNarration] = useState(source?.narration ?? '');
   const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+  useEffect(() => registerUnsaved(() => dirtyRef.current || !!body.current?.isDirty()), []);
   const [billReq, setBillReq] = useState<{ ledger: Ledger; amount: number; resolve: (b: BillInput[] | null) => void } | null>(null);
   const [postDated, setPostDated] = useState(false);
   const [flags, setFlags] = useState({ einvoice: false, ewb: false, tds: false });
-  const [costReq, setCostReq] = useState<{ ledger: string; amount: number; resolve: (l: AllocationInput[] | null) => void } | null>(null);
+  const classes = useVoucherClasses(type.id);
+  const [vclass, setVclass] = useState<VoucherClass | null>(null);
+  const askedClass = useRef(false);
+  useEffect(() => {
+    if (editing || askedClass.current || !classes.length) return;
+    askedClass.current = true;
+    nav.push(<VoucherClassPicker typeId={type.id} title="Voucher Class List" onPick={(c) => { setVclass(c); setResetKey((k) => k + 1); }} />);
+  }, [classes, editing, nav, type.id]);
+  const [costReq, setCostReq] = useState<{ ledger: string; amount: number; initial?: AllocationInput[]; resolve: (l: AllocationInput[] | null) => void } | null>(null);
   const body = useRef<BodyHandle>(null);
   const dateRef = useRef<HTMLInputElement>(null);
   const narrRef = useRef<HTMLInputElement>(null);
@@ -163,7 +201,7 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
         }
       });
     });
-  const askCost = (ledger: string, amount: number) => new Promise<AllocationInput[] | null>((resolve) => setCostReq({ ledger, amount, resolve }));
+  const askCost = (ledger: string, amount: number, initial?: AllocationInput[]) => new Promise<AllocationInput[] | null>((resolve) => setCostReq({ ledger, amount, initial, resolve }));
 
   const askBankAlloc = (ledgerId: number, amount: number, existing: BankAllocValues | null) =>
     new Promise<BankAllocValues | null>((resolve) => {
@@ -250,13 +288,22 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
     try {
       const entries = built.entries;
       let tdsPlan: { plan: TdsPlan; partyId: number } | null = null;
-      if (flags.tds && !editing && ['Payment', 'Purchase', 'Journal'].includes(type.parent)) {
+      const priorTds = flags.tds && editing && source ? await books.db.select<{ party_id: number; duty_ledger_id: number; total: number }>('SELECT party_id, duty_ledger_id, total FROM tds_deductions WHERE voucher_id = ?', [source.id]).catch(() => []) : [];
+      if (flags.tds && ['Payment', 'Purchase', 'Journal'].includes(type.parent)) {
         for (const e of entries) {
           const l = ledgers.find((x) => x.id === e.ledger_id);
           const payingParty = type.parent === 'Payment' ? e.amount > 0 : e.amount < 0;
           if (l && payingParty && l.tds_deductible) {
             const got = await askTds(l.id, Math.abs(e.amount));
             if (!got) return;
+            for (const old of priorTds.filter((p) => p.party_id === l.id)) {
+              const di = entries.findIndex((x) => x.ledger_id === old.duty_ledger_id && x.amount === -old.total);
+              const back = entries.find((x) => x.amount < 0 && x.ledger_id !== old.duty_ledger_id);
+              if (di >= 0 && back) {
+                entries.splice(di, 1);
+                back.amount -= old.total;
+              }
+            }
             if (got.plan.tax > 0) {
               const duty = got.plan.duty_ledger_id ?? (await ensureDutyLedger(books, got.plan.nature_id));
               const target = entries.find((x) => x.amount < 0 && x.ledger_id !== duty);
@@ -271,11 +318,19 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
         }
       }
       const costLines = new Map<number, AllocationInput[]>();
-      if (company?.cost_centres_enabled && !editing) {
+      if (company?.cost_centres_enabled) {
+        const prior = new Map<number, AllocationInput[]>();
+        if (editing && source) {
+          const byEntry = await voucherAllocations(books.db, source.id).catch(() => new Map<number, AllocationRow[]>());
+          for (const e of source.entries) {
+            const rows = byEntry.get(e.id);
+            if (rows?.length && !prior.has(e.ledger_id)) prior.set(e.ledger_id, rows.map((r) => ({ cost_centre_id: r.cost_centre_id, amount: r.amount })));
+          }
+        }
         for (let i = 0; i < entries.length; i += 1) {
           const l = ledgers.find((x) => x.id === entries[i].ledger_id);
           if (l?.cost_centres) {
-            const lines = await askCost(l.name, entries[i].amount);
+            const lines = await askCost(l.name, entries[i].amount, prior.get(l.id));
             if (lines === null) return;
             if (lines.length) costLines.set(i, lines);
           }
@@ -326,6 +381,14 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
         const fresh = await books.voucher(source.id);
         const links = built.track?.length ? built.track : oldTrack.map((t) => ({ index: oldIds.indexOf(t.movement_id), against: t.against_id, qty: t.qty }));
         for (const t of links) if (fresh?.stock[t.index]) await trackAgainst(books.db, fresh.stock[t.index].id, t.against, t.qty);
+        for (const b of built.batches ?? []) if (fresh?.stock[b.index]) await saveBatchAllocations(books.db, fresh.stock[b.index].id, b.allocs);
+        if (fresh && built.forex?.length) await saveVoucherForex(books.db, fresh, built.forex.map((f) => ({ entry_index: f.index, forex: f.forex })));
+        if (tdsPlan) await recordDeduction(books.db, source.id, tdsPlan.partyId, iso, tdsPlan.plan);
+        else if (priorTds.length) await books.db.batch([{ sql: 'DELETE FROM tds_deductions WHERE voucher_id = ?', params: [source.id] }]);
+        for (const [idx, lines] of costLines) {
+          const row = fresh?.entries[idx];
+          if (row) await saveEntryAllocations(books.db, row.id, lines);
+        }
         if (bank) await saveAlloc(source.id, bank);
         lastDate = iso;
         bump();
@@ -334,6 +397,8 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
       } else {
         const v = await books.createVoucher(payload);
         for (const t of built.track ?? []) if (v.stock[t.index]) await trackAgainst(books.db, v.stock[t.index].id, t.against, t.qty);
+        for (const b of built.batches ?? []) if (v.stock[b.index]) await saveBatchAllocations(books.db, v.stock[b.index].id, b.allocs);
+        if (built.forex?.length) await saveVoucherForex(books.db, v, built.forex.map((f) => ({ entry_index: f.index, forex: f.forex })));
         if (tdsPlan) await recordDeduction(books.db, v.id, tdsPlan.partyId, iso, tdsPlan.plan);
         for (const [idx, lines] of costLines) {
           const row = v.entries[idx];
@@ -393,7 +458,7 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
   };
 
   useScreen({
-    title: `${editing ? 'Voucher Alteration' : 'Accounting Voucher Creation'}`,
+    title: `${editing ? 'Voucher Alteration' : (STOCK_VOUCHER_TYPES as readonly string[]).includes(type.parent) ? 'Inventory Voucher Creation' : 'Accounting Voucher Creation'}`,
     kind: 'voucher',
     keys: {
       'Ctrl+A': () => void save(),
@@ -410,6 +475,7 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
       'Alt+2': () => (editing ? duplicate() : false),
       'Alt+R': () => body.current?.removeLine(),
       'Ctrl+H': () => {
+        if (type.parent === 'Stock Journal' && !editing) return void nav.push(<ChangeVoucherMode current="Use for Stock Journal" onPick={(m) => m === 'Use for Manufacturing Journal' && nav.replace(<ManufacturingJournalScreen />)} />);
         if (!gst || editing || itemMode || stockMode) return false;
         if (body.current?.isDirty()) return toast('Clear the entries before changing the view', 'err');
         setInvoice((v) => !v);
@@ -418,7 +484,7 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
     },
     buttons: [
       { key: 'F2', label: 'Date', run: () => dateRef.current?.focus() },
-      ...(gst && !editing ? [{ key: 'Ctrl+H', label: invoice ? 'As Voucher' : 'Invoice View', run: () => undefined }] : []),
+      ...(type.parent === 'Stock Journal' && !editing ? [{ key: 'Ctrl+H', label: 'Change Mode', run: () => undefined }] : gst && !editing ? [{ key: 'Ctrl+H', label: invoice ? 'As Voucher' : 'Invoice View', run: () => undefined }] : []),
       { key: 'Alt+R', label: 'Remove Line', run: () => body.current?.removeLine() },
       ...(editing
         ? [
@@ -452,6 +518,7 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
               <b>{number}</b>
             )}
           </span>
+          {vclass && <span className="ml-4 italic">Class : <b className="not-italic">{vclass.name}</b></span>}
           <span className="ml-6 flex items-center gap-1">
             Ref:
             <input className="tb-input w-32" value={reference} onChange={(e) => { setReference(e.target.value); setDirty(true); }} />
@@ -494,6 +561,7 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
         onFinish={() => narrRef.current?.focus()}
         onDirty={() => setDirty(true)}
         initial={initial}
+        vclass={vclass}
       />
 
       <div className="mt-3 flex items-center gap-2">
@@ -523,6 +591,7 @@ function Editor({ type, ledgers, groups, source, editing }: { type: VoucherType;
         <CostAllocationDialog
           ledger={costReq.ledger}
           amount={costReq.amount}
+          initial={costReq.initial}
           onDone={(l) => {
             costReq.resolve(l);
             setCostReq(null);

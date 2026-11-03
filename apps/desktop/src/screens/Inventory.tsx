@@ -31,6 +31,7 @@ import type { Opt } from '../ui/PickerInput.tsx';
 import { useScreen } from '../registry.ts';
 import { useStore } from '../store.tsx';
 import { useNav } from '../nav.tsx';
+import { BomListScreen } from './Manufacturing.tsx';
 import { useDialogs } from '../ui/Dialogs.tsx';
 import { SelectList } from './SelectList.tsx';
 import { Frame, th, rowCls, useLoad, usePeriodKey, useSel } from './Reports.tsx';
@@ -160,6 +161,7 @@ export function GodownForm() {
 
 export function StockItemForm({ id, presetName }: { id?: number; presetName?: string }) {
   const { books, company } = useStore();
+  const nav = useNav();
   const allUnits = useList<Unit>(() => units(books.db));
   const groups = useList<StockGroup>(() => stockGroups(books.db));
   const cats = useList<StockCategory>(() => stockCategories(books.db));
@@ -185,6 +187,7 @@ export function StockItemForm({ id, presetName }: { id?: number; presetName?: st
     { key: 'alt_conv', label: 'Conversion (1 alternate unit = base units)', kind: 'text', initial: cur?.alt_conversion ? fmtQty(cur.alt_conversion) : '', visible: (v) => !!v.alt_unit },
     pk('Costing Methods', 'costing_method', [...COSTING_METHODS], cur?.costing_method || 'Avg Cost', 'Costing method', { required: true }),
     pk('Market Valuation Methods', 'market_method', ['Not Applicable', 'Average Price', 'Last Sale Price', 'Last Purchase Price'], cur?.market_method || 'Not Applicable', 'Market valuation method', { required: true }),
+    { key: 'set_bom', label: id ? 'Alter Components (BOM)' : 'Set Components (BOM)', kind: 'toggle', initial: false },
     { key: 'maintain_batches', label: 'Maintain in batches', kind: 'toggle', initial: !!cur?.maintain_batches },
     { key: 'track_expiry', label: 'Track date of manufacturing / expiry', kind: 'toggle', initial: !!cur?.track_expiry, visible: (v) => !!v.maintain_batches },
     { key: 'enable_cost_tracking', label: 'Enable cost tracking', kind: 'toggle', initial: !!cur?.enable_cost_tracking },
@@ -239,8 +242,8 @@ export function StockItemForm({ id, presetName }: { id?: number; presetName?: st
           opening_value: value,
           standard_price: Number(v.price) || 0,
         };
-        if (id) await updateStockItem(books.db, id, input);
-        else await createStockItem(books.db, input);
+        const savedId = id ? (await updateStockItem(books.db, id, input), id) : (await createStockItem(books.db, input)).id;
+        if (v.set_bom) setTimeout(() => nav.push(<BomListScreen itemId={savedId} />), 0);
       }}
       onDelete={id ? () => deleteStockItem(books.db, id) : undefined}
     />

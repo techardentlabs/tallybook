@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { STATES, isValidGstin, stateCode, type Group, type Ledger, type VoucherType } from '@tallybook/core';
-import { canCurrent } from '@tallybook/core';
+import { canCurrent, partyPriceLevel, setPartyPriceLevel } from '@tallybook/core';
+import { usePriceLevelOptions } from './PriceLists.tsx';
 import { VoucherTypeOptionsScreen } from './VoucherClass.tsx';
 import { InterestParametersScreen } from './Interest.tsx';
 import { TdsDutyLedgerForm, TdsPartyDetailsForm } from './Tds.tsx';
@@ -9,6 +10,7 @@ import { Form, type FieldDef, type FormHandle } from '../ui/Form.tsx';
 import type { Opt } from '../ui/PickerInput.tsx';
 import { useScreen } from '../registry.ts';
 import { useStore } from '../store.tsx';
+import { useCurrencies } from './Currency.tsx';
 import { useNav } from '../nav.tsx';
 import { useDialogs } from '../ui/Dialogs.tsx';
 
@@ -143,6 +145,14 @@ export function LedgerForm({ id, presetName, onSaved }: LedgerFormProps) {
   const groups = useGroups();
   const form = useRef<FormHandle>(null);
   const [cur, setCur] = useState<Ledger | null>(null);
+  const levelOpts = usePriceLevelOptions();
+  const forexList = useCurrencies();
+  const baseSym = company?.currency_symbol ?? '₹';
+  const curOpts: Opt[] = [{ id: 0, label: baseSym, sub: company?.currency_name ?? 'INR' }, ...forexList.map((c) => ({ id: c.id, label: c.symbol, sub: c.formal_name }))];
+  const [levelId, setLevelId] = useState<number | null>(null);
+  useEffect(() => {
+    if (id) void partyPriceLevel(books.db, id).then((l) => setLevelId(l?.id ?? null)).catch(() => undefined);
+  }, [books, id]);
   const [ready, setReady] = useState(!id);
   useEffect(() => {
     if (!id) return;
@@ -198,9 +208,10 @@ export function LedgerForm({ id, presetName, onSaved }: LedgerFormProps) {
         inventory_affected: v.inventory_affected ? 1 : 0, check_credit_days: v.check_credit_days ? 1 : 0, credit_limit: v.credit_limit || 0,
         cost_centres: v.cost_centres ? 1 : 0, interest_active: v.interest_active ? 1 : 0, tds_deductible: v.tds_deductible ? 1 : 0,
         tcs_applicable: v.tcs_applicable ? 1 : 0, is_ecommerce: v.is_ecommerce ? 1 : 0, rounding_limit: v.rounding_limit || 0,
-        auto_reconcile: v.auto_reconcile ? 1 : 0,
+        auto_reconcile: v.auto_reconcile ? 1 : 0, currency_id: Number(v.currency_id) || 0,
       };
       const saved = id ? await books.updateLedger(id, payload) : await books.createLedger(payload);
+      if (invOn && company?.price_levels_enabled && levelOpts.length > 1 && v.price_level_id !== undefined) await setPartyPriceLevel(books.db, saved.id, Number(v.price_level_id) || null);
       bump();
       toast(id ? 'Ledger altered' : 'Ledger created', 'ok');
       onSaved?.(saved);
@@ -272,6 +283,7 @@ export function LedgerForm({ id, presetName, onSaved }: LedgerFormProps) {
     { key: 'rounding_limit', label: 'Rounding limit', kind: 'amount', initial: cur?.rounding_limit || undefined, visible: (v) => isIndirect(v) && v.ledger_type === 'Invoice Rounding' },
     pick('Appropriate To', 'appropriate_to', ['Goods', 'Services'], cur?.appropriate_to || 'Goods', { visible: (v) => invOn && isIndirect(v) && !!v.inventory_affected }, 'Appropriate to'),
     pick('Calculation Methods', 'calc_method', ['Based on Value', 'Based on Quantity', 'As Total Amount', 'As Total Item Quantity'], cur?.calc_method || 'Based on Value', { visible: (v) => invOn && isIndirect(v) && !!v.inventory_affected }, 'Method of calculation'),
+    { key: 'currency_id', label: 'Currency of Ledger', kind: 'picker', title: 'Currencies', options: curOpts, initial: curOpts.find((o) => o.id === (cur?.currency_id ?? 0)) ?? curOpts[0], visible: () => forexList.length > 0 },
     {
       key: 'bill_by_bill',
       label: 'Maintain balances bill-by-bill',
@@ -297,7 +309,7 @@ export function LedgerForm({ id, presetName, onSaved }: LedgerFormProps) {
     { key: 'fax', label: 'Fax no.', kind: 'text', initial: cur?.fax, visible: (v) => isParty(v) },
     { key: 'cc_email', label: 'E-mail (CC)', kind: 'text', initial: cur?.cc_email, visible: (v) => isParty(v) },
     { key: 'website', label: 'Website', kind: 'text', initial: cur?.website, visible: (v) => isParty(v) },
-    { key: 'price_level', label: 'Price level', kind: 'text', initial: cur?.price_level, visible: (v) => invOn && isParty(v) },
+    { key: 'price_level_id', label: 'Price level applicable', kind: 'picker', title: 'Price Levels', options: levelOpts, initial: levelOpts.find((o) => o.id === (levelId ?? 0)) ?? levelOpts[0], visible: (v) => invOn && !!company?.price_levels_enabled && isParty(v) && levelOpts.length > 1 },
     { key: 'bank_holder', label: 'A/c holder name', kind: 'text', initial: cur?.bank_holder, heading: 'Bank details', visible: (v) => isBank(v) || isParty(v) },
     { key: 'bank_name', label: 'Bank name', kind: 'text', initial: cur?.bank_name, visible: (v) => isBank(v) || isParty(v) },
     { key: 'bank_account', label: 'A/c no.', kind: 'text', initial: cur?.bank_account, visible: (v) => isBank(v) || isParty(v) },

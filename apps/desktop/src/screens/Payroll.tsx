@@ -5,7 +5,18 @@ import {
   CALC_PERIODS,
   CALC_TYPES,
   COMPUTE_BASES,
+  GRATUITY_CALC,
   INCOME_TYPES,
+  IT_CALC,
+  TAX_REGIMES,
+  employeeTax,
+  employeeTerms,
+  fyOf,
+  resetTaxRules,
+  saveEmployeeTax,
+  saveEmployeeTerms,
+  saveTaxRules,
+  taxRules,
   PAY_HEAD_TYPES,
   PER_OPTIONS,
   ROUNDING_METHODS,
@@ -49,6 +60,8 @@ import {
   type PayHead,
   type PayHeadInput,
   type SalaryOwner,
+  type TaxRegime,
+  type TaxRules,
   type Unit,
 } from '@tallybook/core';
 import { Form, type FieldDef, type FormHandle } from '../ui/Form.tsx';
@@ -192,12 +205,20 @@ export function EmployeeCategoryForm({ id, presetName }: { id?: number; presetNa
 
 const GENDERS: Opt[] = ['Male', 'Female', 'Others'].map((g) => ({ id: g, label: g }));
 
+const regimeOpts: Opt[] = TAX_REGIMES.map((r) => ({ id: r.id, label: r.label }));
+
 export function EmployeeForm({ id, presetName }: { id?: number; presetName?: string }) {
-  const { books, company } = useStore();
+  const { books, company, period } = useStore();
   const nav = useNav();
   const groups = useList<EmployeeGroup>(() => employeeGroups(books.db));
   const cur = useRecord(id, (i) => employee(books.db, i));
-  if (cur === undefined) return null;
+  const fy = fyOf(period.from || company?.fy_start || new Date().toISOString().slice(0, 10)).from;
+  const [extra, setExtra] = useState<{ regime: TaxRegime; fixed: boolean; leaving: string } | null>(null);
+  useEffect(() => {
+    if (!id) return setExtra({ regime: 'new', fixed: false, leaving: '' });
+    void Promise.all([employeeTax(books.db, id, fy), employeeTerms(books.db, id)]).then(([t, x]) => setExtra({ regime: t.regime, fixed: !!x.fixed_term, leaving: x.date_of_leaving }));
+  }, [id, fy]);
+  if (cur === undefined || !extra) return null;
   const opts = parentOpts(groups);
   const f = (key: string, label: string, kind: FieldDef['kind'] = 'text', extra: Partial<FieldDef> = {}): FieldDef => ({
     key,
@@ -236,6 +257,9 @@ export function EmployeeForm({ id, presetName }: { id?: number; presetName?: str
     f('pf_number', 'PF account number'),
     f('pran', 'PR Account Number (PRAN)'),
     f('esi_number', 'ESI number'),
+    { key: 'regime', label: 'Applicable tax regime', kind: 'picker', title: 'Tax Regimes', options: regimeOpts, initial: regimeOpts.find((o) => o.id === extra.regime), required: true, note: `For the financial year from ${fmtDate(fy)}` },
+    { key: 'fixed_term', label: 'Fixed term employee', kind: 'toggle', initial: extra.fixed },
+    { key: 'leaving', label: 'Date of leaving', kind: 'text', initial: extra.leaving ? fmtDate(extra.leaving) : '' },
   ];
   return (
     <Master
@@ -257,7 +281,12 @@ export function EmployeeForm({ id, presetName }: { id?: number; presetName?: str
           gender: String(v.gender ?? ''),
           ...Object.fromEntries(['emp_number', 'designation', 'function', 'location', 'blood_group', 'parent_name', 'spouse_name', 'address', 'phone', 'email', 'bank_name', 'bank_account', 'bank_ifsc', 'bank_branch', 'pan', 'aadhaar', 'uan', 'pf_number', 'pran', 'esi_number'].map((k) => [k, String(v[k] ?? '')])),
         };
+        const leaving = String(v.leaving || '');
+        const leavingIso = leaving ? parseDate(leaving, company?.fy_start) : '';
+        if (leaving && !leavingIso) throw new Error('Date of leaving: invalid date');
         const e = id ? await updateEmployee(books.db, id, input) : await createEmployee(books.db, input);
+        await saveEmployeeTax(books.db, e.id, fy, { regime: (String(v.regime || 'new') as TaxRegime) });
+        await saveEmployeeTerms(books.db, e.id, { fixed_term: !!v.fixed_term, date_of_leaving: leavingIso ?? '' });
         return v.salary ? e.id : undefined;
       }}
       after={(eid) => nav.push(<SalaryDetailsScreen owner={{ employee_id: eid }} />)}
@@ -323,7 +352,10 @@ export function PayHeadForm({ id, presetName }: { id?: number; presetName?: stri
   };
   const side = (v: Record<string, unknown>) => payHeadSide(String(v.ph_type));
   const earn = (v: Record<string, unknown>) => !!v.ph_type && side(v) === 'earn';
-  const calc = (v: Record<string, unknown>) => String(v.calc_type);
+  const statDed = (v: Record<string, unknown>) => v.ph_type === "Employees' Statutory Deductions";
+  const isGratuity = (v: Record<string, unknown>) => v.ph_type === 'Gratuity';
+  const calc = (v: Record<string, unknown>) => (isGratuity(v) ? GRATUITY_CALC : statDed(v) ? String(v.calc_type_sd) : String(v.calc_type));
+  const sdCalcTypes = [...CALC_TYPES, IT_CALC];
   const formula = (v: Record<string, unknown>) => calc(v) === 'As Computed Value' && v.compute_basis === 'On Specified Formula';
   const fields: FieldDef[] = [
     { key: 'name', label: 'Name', kind: 'text', required: true, initial: cur?.name ?? presetName },
@@ -334,7 +366,8 @@ export function PayHeadForm({ id, presetName }: { id?: number; presetName?: stri
     { key: 'affect', label: 'Affect net salary', kind: 'toggle', initial: cur ? !!cur.affect_net : true, visible: earn },
     { key: 'display_name', label: '  Name to be displayed in payslip', kind: 'text', initial: cur?.display_name, visible: (v) => !!v.ph_type && side(v) !== 'emp' },
     { key: 'gratuity', label: 'Use for calculation of gratuity', kind: 'toggle', initial: !!cur?.gratuity, visible: earn },
-    { key: 'calc_type', label: 'Calculation type', kind: 'picker', title: 'Calculation Types', options: enumOpts(CALC_TYPES), initial: enumPick(CALC_TYPES, cur?.calc_type, 1), required: true },
+    { key: 'calc_type', label: 'Calculation type', kind: 'picker', title: 'Calculation Types', options: enumOpts(CALC_TYPES), initial: enumPick(CALC_TYPES, cur?.calc_type, 1), required: true, visible: (v) => !statDed(v) && !isGratuity(v) },
+    { key: 'calc_type_sd', label: 'Calculation type', kind: 'picker', title: 'Calculation Types', options: enumOpts(sdCalcTypes), initial: enumPick(sdCalcTypes, cur?.calc_type, 1), required: true, visible: statDed },
     { key: 'att', label: '  Attendance/leave with pay', kind: 'picker', title: 'Attendance/Production Types', options: attOpts, initial: attOpts.find((o) => o.id === cur?.attendance_type_id), required: true, visible: (v) => calc(v) === 'On Attendance' },
     { key: 'prod', label: '  Production type', kind: 'picker', title: 'Attendance/Production Types', options: prodOpts, initial: prodOpts.find((o) => o.id === cur?.attendance_type_id), required: true, visible: (v) => calc(v) === 'On Production' },
     { key: 'period', label: '  Calculation period', kind: 'picker', title: 'Calculation Periods', options: enumOpts(CALC_PERIODS), initial: enumPick(CALC_PERIODS, cur?.calc_period, 2), required: true, visible: (v) => calc(v) === 'On Attendance' },
@@ -358,7 +391,8 @@ export function PayHeadForm({ id, presetName }: { id?: number; presetName?: stri
       fields={fields}
       labelWidth={300}
       onSave={async (v) => {
-        const kind = String(v.statutory || '');
+        const picked = String(v.statutory || '');
+        const kind = calc(v) === IT_CALC ? 'IT' : picked === 'IT' ? '' : picked;
         const pct = String(v.rate || '').trim();
         if (pct && !/^\d+(\.\d{1,2})?$/.test(pct)) throw new Error('Percentage: enter a valid number');
         const def = kind ? statutoryDefaults(kind) : {};
@@ -366,7 +400,7 @@ export function PayHeadForm({ id, presetName }: { id?: number; presetName?: stri
           .filter(Boolean)
           .map((x) => String(x).split(':'))
           .map(([s, pid]) => ({ pay_head_id: Number(pid), sign: (Number(s) === -1 ? -1 : 1) as 1 | -1 }));
-        const computed = v.calc_type === 'As Computed Value';
+        const computed = calc(v) === 'As Computed Value';
         const input: PayHeadInput = {
           name: String(v.name),
           alias: String(v.alias),
@@ -376,7 +410,7 @@ export function PayHeadForm({ id, presetName }: { id?: number; presetName?: stri
           affect_net: v.affect === undefined ? true : !!v.affect,
           display_name: String(v.display_name || ''),
           gratuity: !!v.gratuity,
-          calc_type: String(v.calc_type),
+          calc_type: calc(v),
           attendance_type_id: Number(optId(v.att) ?? optId(v.prod)) || undefined,
           calc_period: String(v.period || 'Months'),
           basis: String(v.basis || BASIS_OPTIONS[0]),
@@ -388,7 +422,7 @@ export function PayHeadForm({ id, presetName }: { id?: number; presetName?: stri
           max_base: Number(v.max_base) || (computed ? def.max_base ?? 0 : 0),
           slabs: computed && !pct ? def.slabs ?? cur?.slabs ?? [] : cur?.slabs ?? [],
           statutory: kind,
-          rounding: String(v.rounding),
+          rounding: calc(v) === IT_CALC && cur?.calc_type !== IT_CALC && v.rounding === 'Not Applicable' ? 'Upward Rounding' : String(v.rounding),
           rounding_limit: Number(v.limit) || 100,
         };
         if (id) await updatePayHead(books, id, input);
@@ -407,7 +441,7 @@ interface SalaryRowState {
 }
 
 const blankRow = (): SalaryRowState => ({ ph: null, text: '', rate: '', per: 'Months' });
-const rated = (ph: PayHead | null) => !!ph && ph.calc_type !== 'As Computed Value';
+const rated = (ph: PayHead | null) => !!ph && ph.calc_type !== 'As Computed Value' && ph.calc_type !== IT_CALC && ph.calc_type !== GRATUITY_CALC;
 
 function computedOn(ph: PayHead, all: PayHead[]): string {
   if (ph.calc_type !== 'As Computed Value') return '';
@@ -658,4 +692,126 @@ export function SalaryDetailsList() {
   }, [books, version]);
   const index = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
   return <SelectList title="Salary Details" heading="List of Employees" items={items} onSelect={(i) => nav.push(<SalaryDetailsScreen owner={index.get(String(i.id))!.owner} />)} />;
+}
+
+const rupees = (v: unknown) => Number(v) || 0;
+
+export function IncomeTaxDeclarationForm({ employeeId }: { employeeId: number }) {
+  const { books, company, period } = useStore();
+  const fy = fyOf(period.from || company?.fy_start || new Date().toISOString().slice(0, 10)).from;
+  const [data, setData] = useState<{ name: string; t: Awaited<ReturnType<typeof employeeTax>> } | null>(null);
+  useEffect(() => {
+    void Promise.all([employee(books.db, employeeId), employeeTax(books.db, employeeId, fy)]).then(([e, t]) => setData({ name: e?.name ?? '', t }));
+  }, [employeeId, fy]);
+  if (!data) return null;
+  const t = data.t;
+  const old = (v: Record<string, unknown>) => v.regime === 'old';
+  return (
+    <Master
+      title={`Income Tax Declarations : ${data.name}`}
+      labelWidth={340}
+      fields={[
+        { key: 'regime', label: 'Applicable tax regime', kind: 'picker', title: 'Tax Regimes', options: regimeOpts, initial: regimeOpts.find((o) => o.id === t.regime), required: true, note: `Financial year from ${fmtDate(fy)}` },
+        { key: 'previous_salary', label: 'Salary from previous employer', kind: 'amount', initial: t.previous_salary || undefined, heading: 'Previous Employer Details' },
+        { key: 'previous_tds', label: 'Tax deducted by previous employer', kind: 'amount', initial: t.previous_tds || undefined },
+        { key: 'other_income', label: 'Other income (other sources)', kind: 'amount', initial: t.other_income || undefined, heading: 'Other Income' },
+        { key: 'home_loan_interest', label: 'Interest on housing loan (self-occupied)', kind: 'amount', initial: t.home_loan_interest || undefined, visible: old },
+        { key: 'hra_exemption', label: 'House Rent Allowance exemption', kind: 'amount', initial: t.hra_exemption || undefined, visible: old, heading: 'Exemptions and Deductions (Regular Tax Regime)' },
+        { key: 'sec80c', label: 'Investments (80C), excluding PF deducted', kind: 'amount', initial: t.sec80c || undefined, visible: old },
+        { key: 'sec80ccd1b', label: 'Additional NPS contribution (80CCD(1B))', kind: 'amount', initial: t.sec80ccd1b || undefined, visible: old },
+        { key: 'sec80d', label: 'Health insurance premium (80D)', kind: 'amount', initial: t.sec80d || undefined, visible: old },
+        { key: 'other_deductions', label: 'Other Chapter VI-A deductions', kind: 'amount', initial: t.other_deductions || undefined, visible: old },
+      ]}
+      onSave={async (v) => {
+        await saveEmployeeTax(books.db, employeeId, fy, {
+          regime: (String(v.regime || 'new') as TaxRegime),
+          previous_salary: rupees(v.previous_salary),
+          previous_tds: rupees(v.previous_tds),
+          other_income: rupees(v.other_income),
+          home_loan_interest: rupees(v.home_loan_interest),
+          hra_exemption: rupees(v.hra_exemption),
+          sec80c: rupees(v.sec80c),
+          sec80ccd1b: rupees(v.sec80ccd1b),
+          sec80d: rupees(v.sec80d),
+          other_deductions: rupees(v.other_deductions),
+        });
+      }}
+    />
+  );
+}
+
+export function IncomeTaxDeclarationList() {
+  const { books } = useStore();
+  return <AlterList<Employee> title="Income Tax Declarations" heading="List of Employees" load={() => employees(books.db)} label={(e) => e.name} form={(id) => <IncomeTaxDeclarationForm employeeId={id} />} />;
+}
+
+const SLAB_ROWS = 8;
+const pctText = (bp: number) => String(bp / 100);
+const toBp = (s: unknown) => Math.round((parseFloat(String(s ?? '').replace('%', '').trim()) || 0) * 100);
+
+export function IncomeTaxSlabsForm({ regime }: { regime: TaxRegime }) {
+  const { books, company, period, bump, toast } = useStore();
+  const nav = useNav();
+  const fy = fyOf(period.from || company?.fy_start || new Date().toISOString().slice(0, 10)).from;
+  const [rules, setRules] = useState<TaxRules | null>(null);
+  useEffect(() => void taxRules(books.db, fy, regime).then(setRules), [fy, regime]);
+  if (!rules) return null;
+  const slabFields = (key: 'slabs' | 'senior_slabs' | 'super_senior_slabs', heading: string): FieldDef[] =>
+    Array.from({ length: SLAB_ROWS }, (_, i) => i).flatMap((i): FieldDef[] => [
+      { key: `${key}_from_${i}`, label: `  Income above`, kind: 'amount', initial: rules[key][i]?.from || undefined, heading: i === 0 ? heading : undefined },
+      { key: `${key}_rate_${i}`, label: `    Rate %`, kind: 'text', initial: rules[key][i] ? pctText(rules[key][i].rate_bp) : '' },
+    ]);
+  const readSlabs = (v: Record<string, unknown>, key: string) =>
+    Array.from({ length: SLAB_ROWS }, (_, i) => ({ from: Number(v[`${key}_from_${i}`]) || 0, rate_bp: toBp(v[`${key}_rate_${i}`]), set: i === 0 || !!v[`${key}_from_${i}`] }))
+      .filter((s) => s.set)
+      .map(({ from, rate_bp }) => ({ from, rate_bp }));
+  const reset = async () => {
+    await resetTaxRules(books.db, fy, regime);
+    bump();
+    toast('Slabs restored to statutory defaults', 'ok');
+    nav.pop();
+  };
+  return (
+    <>
+      <Master
+        title={`Income Tax Slabs - ${TAX_REGIMES.find((r) => r.id === regime)?.label}`}
+        labelWidth={300}
+        fields={[
+          { key: 'standard_deduction', label: 'Standard deduction', kind: 'amount', initial: rules.standard_deduction, heading: `Financial year from ${fmtDate(fy)} (Income-tax Act, ${rules.act})` },
+          { key: 'rebate_limit', label: 'Rebate if total income does not exceed', kind: 'amount', initial: rules.rebate_limit },
+          { key: 'rebate_max', label: 'Maximum rebate', kind: 'amount', initial: rules.rebate_max },
+          { key: 'rebate_marginal', label: 'Marginal relief on rebate', kind: 'toggle', initial: rules.rebate_marginal },
+          { key: 'cess', label: 'Health and Education Cess %', kind: 'text', initial: pctText(rules.cess_bp) },
+          ...slabFields('slabs', 'Slabs'),
+          ...(regime === 'old' ? [...slabFields('senior_slabs', 'Slabs for age 60 to 79'), ...slabFields('super_senior_slabs', 'Slabs for age 80 and above')] : []),
+        ]}
+        onSave={async (v) => {
+          await saveTaxRules(books.db, {
+            ...rules,
+            standard_deduction: rupees(v.standard_deduction),
+            rebate_limit: rupees(v.rebate_limit),
+            rebate_max: rupees(v.rebate_max),
+            rebate_marginal: !!v.rebate_marginal,
+            cess_bp: toBp(v.cess),
+            slabs: readSlabs(v, 'slabs'),
+            senior_slabs: regime === 'old' ? readSlabs(v, 'senior_slabs') : [],
+            super_senior_slabs: regime === 'old' ? readSlabs(v, 'super_senior_slabs') : [],
+          });
+        }}
+      />
+      <button className="mt-3 underline" onClick={() => void reset()}>Restore statutory slabs</button>
+    </>
+  );
+}
+
+export function IncomeTaxSlabsList() {
+  const nav = useNav();
+  return (
+    <SelectList
+      title="Income Tax Slabs"
+      heading="List of Tax Regimes"
+      items={TAX_REGIMES.map((r) => ({ id: r.id, label: r.label }))}
+      onSelect={(i) => nav.push(<IncomeTaxSlabsForm regime={i.id as TaxRegime} />)}
+    />
+  );
 }

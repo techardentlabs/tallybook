@@ -817,3 +817,5 @@ export function selectCompanyRef(list: CompanyList, id: string, now: string = ne
 export function sortedCompanyRefs(list: CompanyList): CompanyRef[] {
   return [...list.companies].sort((a, b) => a.name.localeCompare(b.name));
 }
+
+export * from './companies.ts';

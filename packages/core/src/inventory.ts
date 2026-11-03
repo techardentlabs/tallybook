@@ -91,7 +91,16 @@ export async function ensureInventory(db: Db): Promise<void> {
   ]);
 }
 
-export async function ensureStockVoucherTypes(db: Db): Promise<boolean> {
+const seeding = new WeakMap<Db, Promise<boolean>>();
+
+export function ensureStockVoucherTypes(db: Db): Promise<boolean> {
+  const prev = seeding.get(db) ?? Promise.resolve(false);
+  const next = prev.catch(() => false).then(() => seedStockVoucherTypes(db));
+  seeding.set(db, next);
+  return next;
+}
+
+async function seedStockVoucherTypes(db: Db): Promise<boolean> {
   const have = new Set((await db.select<{ name: string }>('SELECT name FROM voucher_types')).map((r) => r.name.toLowerCase()));
   let id = ((await one<{ m: number }>(db, 'SELECT COALESCE(MAX(id), 0) AS m FROM voucher_types'))!.m) + 1;
   const stmts = STOCK_VOUCHER_TYPES.filter((n) => !have.has(n.toLowerCase())).map((n) => ({

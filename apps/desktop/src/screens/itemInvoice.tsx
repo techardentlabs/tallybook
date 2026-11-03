@@ -7,6 +7,7 @@ import {
   lineAmount,
   parseAmount,
   parseQty,
+  getItemPrice,
   pendingDocs,
   planItemInvoice,
   stateCode,
@@ -14,12 +15,14 @@ import {
   stateName,
   stockItems as loadItems,
   taxLedgerName,
+  type BatchAllocInput,
   type Godown,
   type PendingDoc,
   type Ledger,
   type StockItem,
 } from '@tallybook/core';
 import { PickerInput, type Opt } from '../ui/PickerInput.tsx';
+import { BatchAllocationDialog } from './Batches.tsx';
 import { useStore } from '../store.tsx';
 import { OUTPUT_SUPPLY, INPUT_SUPPLY, PARTY_ROOTS, isUnder } from '../lib.ts';
 import type { BodyHandle, BodyProps } from './voucherParts.tsx';
@@ -33,6 +36,9 @@ interface Line {
   rate: string;
   against?: number;
   tracked?: boolean;
+  disc?: number;
+  manualRate?: boolean;
+  batches?: BatchAllocInput[];
 }
 
 const blank = (g?: Godown): Line => ({ item: null, text: '', godown: g ?? null, godownText: g?.name ?? '', qty: '', rate: '' });
@@ -72,6 +78,9 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
   const [slText, setSlText] = useState(firstSupply?.name ?? '');
   const [sl, setSl] = useState<Ledger | null>(firstSupply ?? null);
   const [lines, setLines] = useState<Line[]>([blank()]);
+  const [batchFor, setBatchFor] = useState<number | null>(null);
+  const outward = kind === 'Sales' || kind === 'Debit Note';
+  const needsBatch = (l: Line) => !!company?.batches_enabled && !!l.item?.maintain_batches && !l.tracked;
   const box = useRef<HTMLDivElement>(null);
   const dirty = useRef(false);
   const linesRef = useRef(lines);
@@ -83,7 +92,7 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
       initial.items.map((it) => {
         const item = items.find((x) => x.id === it.item_id) ?? null;
         const g = houses.find((x) => x.id === it.godown_id) ?? houses[0] ?? null;
-        return { item, text: item?.name ?? '', godown: g, godownText: g?.name ?? '', qty: fmtQty(Math.abs(it.qty), 0), rate: fmtAmount(it.rate), tracked: !!it.tracked };
+        return { item, text: item?.name ?? '', godown: g, godownText: g?.name ?? '', qty: fmtQty(Math.abs(it.qty), 0), rate: fmtAmount(it.rate), tracked: !!it.tracked, batches: it.batches };
       })
     );
   }, [initial, items, houses]);
@@ -122,7 +131,7 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
       const q = parseQty(l.qty);
       const r = parseAmount(l.rate);
       if (!l.item || !q || r === null) continue;
-      const t = lineAmount(q, r);
+      const t = lineAmount(q, r, l.disc ?? 0);
       taxable += t;
       const s = gstSplit(t, l.item.rate_bp, intra);
       const add = (head: 'Central Tax' | 'State Tax' | 'Integrated Tax', amt: number, bp: number) => {
@@ -166,11 +175,17 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
             books,
             kind,
             party.id,
-            rows.map((l) => ({ item_id: l.item!.id, godown_id: l.godown?.id ?? 1, ledger_id: sl.id, qty: parseQty(l.qty)!, rate: parseAmount(l.rate) ?? 0, tracked: !!l.tracked })),
+            rows.map((l) => ({ item_id: l.item!.id, godown_id: l.godown?.id ?? 1, ledger_id: sl.id, qty: parseQty(l.qty)!, rate: parseAmount(l.rate) ?? 0, discount_bp: l.disc ?? 0, tracked: !!l.tracked })),
             { placeOfSupply: posCode }
           );
           const track = rows.flatMap((l, index) => (l.against ? [{ index, against: l.against, qty: parseQty(l.qty)! }] : []));
-          return { entries: plan.entries, party_id: party.id, place_of_supply: plan.place_of_supply, stock: plan.stock, track };
+          const missing = rows.findIndex((l) => needsBatch(l) && !l.batches?.length);
+          if (missing >= 0) {
+            toast(`Allocate batches for ${rows[missing].item!.name}`, 'err');
+            return null;
+          }
+          const batches = rows.flatMap((l, index) => (needsBatch(l) && l.batches?.length && l.batches.reduce((a, b) => a + b.qty, 0) === parseQty(l.qty) ? [{ index, allocs: l.batches }] : []));
+          return { entries: plan.entries, party_id: party.id, place_of_supply: plan.place_of_supply, stock: plan.stock, track, batches };
         } catch (e) {
           toast((e as Error).message, 'err');
           return null;
@@ -190,7 +205,7 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
       },
       isDirty: () => dirty.current,
     }),
-    [books, focus, houses, kind, output, party, posCode, sl, toast]
+    [books, company, focus, houses, kind, output, party, posCode, sl, toast]
   );
 
   useEffect(() => {
@@ -336,7 +351,7 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
         {lines.map((l, i) => {
           const q = parseQty(l.qty);
           const r = parseAmount(l.rate);
-          const amt = q && r !== null ? lineAmount(q, r) : 0;
+          const amt = q && r !== null ? lineAmount(q, r, l.disc ?? 0) : 0;
           return (
             <div key={i} className={`grid ${cols} items-center`}>
               <PickerInput
@@ -380,9 +395,17 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
                   if (e.key === 'Enter') {
                     e.preventDefault();
                     e.stopPropagation();
-                    if (!parseQty(l.qty)) return toast('Enter a valid quantity', 'err');
-                    update(i, { qty: fmtQty(parseQty(l.qty)!, l.item ? 0 : 0) });
-                    focus(`i${i}-2`);
+                    const q = parseQty(l.qty);
+                    if (!q) return toast('Enter a valid quantity', 'err');
+                    const same = l.batches?.reduce((a, b) => a + b.qty, 0) === q;
+                    update(i, { qty: fmtQty(q, 0), ...(same ? {} : { batches: undefined }) });
+                    const after = () => (needsBatch(l) ? setBatchFor(i) : focus(`i${i}-2`));
+                    if (l.item && party && !l.manualRate && !l.against) {
+                      void getItemPrice(books.db, { item_id: l.item.id, date: props.date, qty: q, party_id: party.id }).then((p) => {
+                        if (p.source !== 'none') update(i, { rate: fmtAmount(p.rate), disc: p.disc_bp || 0 });
+                        after();
+                      });
+                    } else after();
                   } else if (e.key === 'Backspace' && l.qty === '') {
                     e.preventDefault();
                     e.stopPropagation();
@@ -394,7 +417,7 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
                 className={`tb-input ${num} w-full font-bold`}
                 data-cell={`i${i}-2`}
                 value={l.rate}
-                onChange={(e) => update(i, { rate: e.target.value })}
+                onChange={(e) => update(i, { rate: e.target.value, manualRate: true })}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
@@ -417,6 +440,27 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
         })}
       </div>
 
+      {batchFor !== null && lines[batchFor]?.item && (
+        <BatchAllocationDialog
+          item={lines[batchFor].item!}
+          godownId={lines[batchFor].godown?.id ?? 1}
+          qty={parseQty(lines[batchFor].qty) ?? 0}
+          outward={outward}
+          asOf={props.date}
+          initial={lines[batchFor].batches}
+          onCancel={() => {
+            const i = batchFor;
+            setBatchFor(null);
+            focus(`i${i}-1`);
+          }}
+          onDone={(allocs) => {
+            const i = batchFor;
+            update(i, { batches: allocs });
+            setBatchFor(null);
+            focus(`i${i}-2`);
+          }}
+        />
+      )}
       <div className="ml-auto w-[340px] text-right">
         <div className="flex justify-between"><span>Taxable value</span><span>{fmtAmount(preview.taxable, false)}</span></div>
         {preview.taxes.map(([n, a]) => (

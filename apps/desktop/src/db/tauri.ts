@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Db, SqlValue, Stmt } from '@tallybook/core';
-import type { Backend, Vault } from './index.ts';
+import { companyFileFor, migrateCompanyIndex, serializeCompanyIndex, type CompanyIndex, type Db, type SqlValue, type Stmt } from '@tallybook/core';
+import { storageOf, type Backend, type Registry, type Vault } from './index.ts';
+
+const LEGACY_FILE = 'tallybook.db';
 
 async function call<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   try {
@@ -37,6 +39,33 @@ export async function openTauriStorage(): Promise<Backend> {
     async open(password?: string) {
       await call('db_unlock', { password: password ?? '' });
       return { db: openTauriDb(), vault };
+    },
+  };
+}
+
+interface IndexFile {
+  text: string | null;
+  legacy: boolean;
+  files: string[];
+  root: string;
+}
+
+export async function openTauriRegistry(): Promise<Registry> {
+  const first = await call<IndexFile>('company_index_load');
+  const save = (index: CompanyIndex) => call<void>('company_index_save', { text: serializeCompanyIndex(index) });
+  return {
+    location: first.root,
+    style: 'path',
+    async load() {
+      const f = await call<IndexFile>('company_index_load');
+      const { index, changed } = migrateCompanyIndex(f.text, f.legacy ? LEGACY_FILE : null, f.files);
+      if (changed) await save(index);
+      return index;
+    },
+    save,
+    async open(entry) {
+      await call('company_open', { file: entry.file || companyFileFor(entry.id, 'path') });
+      return storageOf(await openTauriStorage());
     },
   };
 }

@@ -5,16 +5,22 @@ import {
   VAULT_ITERATIONS,
   WRONG_VAULT_PASSWORD,
   deriveVaultKey,
+  isCompanyFile,
   openWithKey,
+  migrateCompanyIndex,
   randomBytes,
   sealWithKey,
+  serializeCompanyIndex,
+  type CompanyIndex,
   type Db,
   type SqlValue,
   type Stmt,
 } from '@tallybook/core';
-import type { Backend, Vault } from './index.ts';
+import { storageOf, type Backend, type Registry, type Vault } from './index.ts';
 
 const STORE = 'files';
+const INDEX_KEY = 'companies';
+const LEGACY_KEY = 'default';
 const AAD = new TextEncoder().encode('tallybook-vault/1');
 const CHECK = new TextEncoder().encode('tallybook-vault-check');
 
@@ -73,6 +79,56 @@ async function put(key: string, value: Stored): Promise<void> {
   });
 }
 
+async function getRaw(key: string): Promise<unknown> {
+  const d = await idb();
+  return new Promise((resolve, reject) => {
+    const r = d.transaction(STORE).objectStore(STORE).get(key);
+    r.onsuccess = () => resolve(r.result ?? null);
+    r.onerror = () => reject(r.error);
+  });
+}
+
+async function allKeys(): Promise<string[]> {
+  const d = await idb();
+  return new Promise((resolve, reject) => {
+    const r = d.transaction(STORE).objectStore(STORE).getAllKeys();
+    r.onsuccess = () => resolve(r.result.filter((k): k is string => typeof k === 'string'));
+    r.onerror = () => reject(r.error);
+  });
+}
+
+async function putRaw(key: string, value: unknown): Promise<void> {
+  const d = await idb();
+  await new Promise<void>((resolve, reject) => {
+    const t = d.transaction(STORE, 'readwrite');
+    t.objectStore(STORE).put(value, key);
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error);
+  });
+}
+
+export async function openWebRegistry(): Promise<Registry> {
+  const save = (index: CompanyIndex) => putRaw(INDEX_KEY, serializeCompanyIndex(index));
+  return {
+    location: 'Browser storage',
+    style: 'key',
+    async load() {
+      const raw = await getRaw(INDEX_KEY);
+      const keys = await allKeys();
+      const legacy = keys.includes(LEGACY_KEY) ? LEGACY_KEY : null;
+      const { index, changed } = migrateCompanyIndex(raw, legacy, keys.filter((k) => /^company-\d{1,12}$/.test(k)));
+      if (changed) await save(index);
+      return index;
+    },
+    save,
+    async open(entry) {
+      if (!isCompanyFile(entry.file, 'key', LEGACY_KEY)) throw new CoreError('invalid', 'The company data file name is not valid');
+      return storageOf(await openWebStorage(entry.file));
+    },
+  };
+}
+
 async function makeCipher(password: string, salt: Uint8Array, iterations: number): Promise<Cipher> {
   const key = await deriveVaultKey(password, salt, iterations);
   return { key, salt, iterations, check: await sealWithKey(key, CHECK, AAD) };
@@ -104,13 +160,14 @@ export async function openWebDb(
   key = 'default',
   existing: Uint8Array | null = null,
   initial: Cipher | null = null
-): Promise<Db & { export(): Uint8Array; reset(): Promise<void>; vault: Vault; db: Db }> {
+): Promise<Db & { export(): Uint8Array; reset(): Promise<void>; flush(): Promise<void>; vault: Vault; db: Db }> {
   const SQL = await initSqlJs({ locateFile: () => wasmUrl });
   const sqlite: Database = existing ? new SQL.Database(existing) : new SQL.Database();
   sqlite.exec('PRAGMA foreign_keys = ON;');
   let cipher = initial;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let chain: Promise<void> = Promise.resolve();
+  let dirty = false;
   const snapshot = () => {
     const bytes = sqlite.export();
     sqlite.exec('PRAGMA foreign_keys = ON;');
@@ -119,6 +176,7 @@ export async function openWebDb(
   const write = (): Promise<void> => {
     const c = cipher;
     const job = chain.catch(() => undefined).then(async () => {
+      dirty = false;
       const bytes = snapshot();
       await put(key, c ? await seal(c, bytes) : bytes);
     });
@@ -126,6 +184,7 @@ export async function openWebDb(
     return job;
   };
   const persist = () => {
+    dirty = true;
     clearTimeout(timer);
     timer = setTimeout(() => void write().catch(() => undefined), 250);
   };
@@ -186,6 +245,11 @@ export async function openWebDb(
     db,
     vault,
     export: () => snapshot(),
+    async flush() {
+      clearTimeout(timer);
+      if (dirty) await write();
+      else await chain;
+    },
     async reset() {
       clearTimeout(timer);
       await chain.catch(() => undefined);

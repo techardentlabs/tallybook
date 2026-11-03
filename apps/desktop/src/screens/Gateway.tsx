@@ -17,7 +17,7 @@ import { CashBankBookReport, CashFlowReport, FundsFlowReport, RatioAnalysisRepor
 import {
   AttendanceSheetReport, AttendanceTypeAlterList, AttendanceTypeForm, EmployeeAlterList, EmployeeCategoryAlterList, EmployeeCategoryForm,
   EmployeeForm, EmployeeGroupAlterList, EmployeeGroupForm, EmployeeVouchersPicker, PayHeadAlterList, PayHeadForm, PayrollStatementReport,
-  PaySlipPicker, SalaryDetailsList,
+  PaySlipPicker, SalaryDetailsList, IncomeTaxDeclarationList, IncomeTaxSlabsList, IncomeTaxComputationPicker, GratuityReport,
 } from './PayrollImports.ts';
 import { CostCategoryForm, CostCentreForm, AlterCostCentres, AlterCostCategories, CostCentreSummaryReport, CostCategorySummaryReport, CostCentreBreakupEntry, BudgetForm, AlterBudgets, BudgetVarianceEntry, GroupInterestEntry, LedgerInterestEntry } from './CostingImports.ts';
 import { NatureOfPaymentList, TdsOutstandingsReport, TdsChallanReconciliationReport, Form26QReport, TdsPaymentScreen, EInvoiceReport, EWayBillReport, Gstr2bReconciliationReport, HsnSummaryReport, TaxAnalysisReport } from './StatutoryImports.ts';
@@ -27,6 +27,7 @@ import { canCurrent, tdsCompany, type TdsCompany } from '@tallybook/core';
 import { AlterCurrencies, CurrencyForm, ForexGainLossReport, MultiCurrencyAlteration } from './Currency.tsx';
 import { StockQueryReport, GodownSummaryReport, ItemMovementReport, StockGroupMovementReport, GroupAnalysisReport, LedgerAnalysisReport, StockTransferAnalysisReport, StockAgeingReport, ReorderStatusReport, StockHierarchySummaryReport, OrderDetailsReport, OrderOutstandingsReport, BillsPendingReport, GodownTransfersReport, PriceLevelForm, PriceLevelsList, PriceListScreen, BatchSummaryReport } from './StockImports.ts';
 import { quitApp } from '../quit.ts';
+import { BomGateway, CostEstimationReport, JobCostingReport, MaterialRequirementReport } from './Manufacturing.tsx';
 
 const PAYROLL_CREATE: Record<string, () => JSX.Element> = {
   'Employee Group': () => <EmployeeGroupForm />,
@@ -151,7 +152,14 @@ export function Gateway() {
 
   const inv = (m: MenuItem[]): MenuItem[] => (company?.inventory_enabled ? m : []);
   const pay = (kind: 'payrollCreate' | 'payrollAlter'): MenuItem[] =>
-    company?.payroll_enabled ? [{ label: 'Payroll Masters', heading: true }, ...PAYROLL_NAMES.map((n) => ({ label: n, run: () => go[kind](n) }))] : [];
+    company?.payroll_enabled
+      ? [
+          { label: 'Payroll Masters', heading: true },
+          ...PAYROLL_NAMES.map((n) => ({ label: n, run: () => go[kind](n) })),
+          { label: 'Income Tax Declarations', run: () => nav.push(<IncomeTaxDeclarationList />) },
+          { label: 'Income Tax Slabs', run: () => nav.push(<IncomeTaxSlabsList />) },
+        ]
+      : [];
   const create: MenuItem[] = [
     { label: 'Accounting Masters', heading: true },
     { label: 'Group', run: go.createGroup },
@@ -162,8 +170,9 @@ export function Gateway() {
       { label: 'Inventory Masters', heading: true },
       { label: 'Stock Group', run: go.createStockGroup },
       { label: 'Stock Category', run: go.createStockCategory },
-      { label: 'Price Level', run: go.priceLevelNew },
+      ...(company?.price_levels_enabled ? [{ label: 'Price Level', run: go.priceLevelNew }] : []),
       { label: 'Stock Item', run: go.createStockItem },
+      { label: 'Bill of Materials', run: () => nav.push(<BomGateway />) },
       { label: 'Unit', run: go.createUnit },
       { label: 'Godown', run: go.createGodown },
     ]),
@@ -185,7 +194,8 @@ export function Gateway() {
     ...inv([
       { label: 'Inventory Masters', heading: true },
       { label: 'Stock Item', run: go.alterStockItem },
-      { label: 'Price Level', run: go.priceLevelAlter },
+      { label: 'Bill of Materials', run: () => nav.push(<BomGateway />) },
+      ...(company?.price_levels_enabled ? [{ label: 'Price Level', run: go.priceLevelAlter }] : []),
     ]),
     ...(company?.cost_centres_enabled ? [{ label: 'Cost Centre Masters', heading: true } as MenuItem, { label: 'Cost Category', run: go.costCategoryAlter }, { label: 'Cost Centre', run: go.costCentreAlter }] : []),
     { label: 'Budgets', heading: true },
@@ -271,6 +281,10 @@ export function Gateway() {
             { label: 'Price Lists', heading: true },
             { label: 'Price List (Stock Group)', run: () => nav.push(<PriceListScreen scope="group" />) },
             { label: 'Price List (Stock Category)', run: () => nav.push(<PriceListScreen scope="category" />) },
+            { label: 'Manufacturing', heading: true },
+            { label: 'Cost Estimation', run: () => nav.push(<CostEstimationReport />) },
+            { label: 'Job Costing', run: () => nav.push(<JobCostingReport />) },
+            { label: 'Material Requirement', run: () => nav.push(<MaterialRequirementReport />) },
           ]),
         ]
       : []),
@@ -280,7 +294,7 @@ export function Gateway() {
       ? [sub('Cost Centres', [book('Cost Centre Summary', go.costCentreSummary), book('Cost Category Summary', go.costCategorySummary), book('Cost Centre Breakup', go.costCentreBreakup)])]
       : []),
     ...(company?.payroll_enabled
-      ? [sub('Payroll Reports', [book('Pay Slip', go.paySlip), book('Payroll Statement', go.payrollStatement), book('Attendance Sheet', go.attendanceSheet), book('Employee Vouchers', go.employeeVouchers)])]
+      ? [sub('Payroll Reports', [book('Pay Slip', go.paySlip), book('Payroll Statement', go.payrollStatement), book('Attendance Sheet', go.attendanceSheet), book('Employee Vouchers', go.employeeVouchers), { label: 'Income Tax Computation', run: () => nav.push(<IncomeTaxComputationPicker />) }, { label: 'Gratuity Report', run: () => nav.push(<GratuityReport />) }])]
       : []),
   ];
 

@@ -238,10 +238,33 @@ function VaultPasswordForm({ message, submit, busyText = 'Checking password...' 
   );
 }
 
-export function VaultUnlock({ unlock }: { unlock: (password: string) => Promise<void> }) {
+export function VaultUnlock({ unlock, company, onCancel }: { unlock: (password: string) => Promise<void>; company?: string; onCancel?: () => void }) {
+  useEffect(() => {
+    if (!onCancel) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      onCancel();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onCancel]);
   return (
     <Panel title="TallyVault Password" width={460}>
-      <VaultPasswordForm message="This company is encrypted with TallyVault. Enter the TallyVault password to open it." submit={unlock} busyText="Opening company..." />
+      <VaultPasswordForm
+        message={
+          company ? (
+            <>
+              <b>{company}</b> is encrypted with TallyVault. Enter the TallyVault password to open it.
+            </>
+          ) : (
+            'This company is encrypted with TallyVault. Enter the TallyVault password to open it.'
+          )
+        }
+        submit={unlock}
+        busyText="Opening company..."
+      />
+      {onCancel && <div className="mt-3 text-xs italic text-tb-muted">Press Esc to go back to the list of companies</div>}
     </Panel>
   );
 }

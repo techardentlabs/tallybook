@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { attendanceSheet, employeeVouchers, employees, fmtAmount, fmtDate, fmtQty, paySlip, payrollStatement, type Employee, type TreeRow } from '@tallybook/core';
+import { attendanceSheet, employeeVouchers, employees, fmtAmount, fmtDate, fmtQty, gratuityReport, incomeTaxComputation, paySlip, payrollStatement, type Employee, type TreeRow } from '@tallybook/core';
 import { useScreen } from '../registry.ts';
 import { useStore } from '../store.tsx';
 import { useNav } from '../nav.tsx';
@@ -330,6 +330,205 @@ export function EmployeeVouchersReport({ employeeId, payHeadId }: { employeeId: 
           </tr>
         </tbody>
       </table>
+    </Frame>
+  );
+}
+
+export function IncomeTaxComputationPicker() {
+  const nav = useNav();
+  return <PickEmployee title="Income Tax Computation" popOnSelect={false} onPick={(e) => nav.push(<IncomeTaxComputationReport employeeId={e.id} />)} />;
+}
+
+const monthLabel = (ym: string) => {
+  const [y, m] = ym.split('-').map(Number);
+  return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]}-${y}`;
+};
+
+const COMP_DEFS = [{ key: 'months', label: 'Show month-wise salary projection', default: true }];
+
+export function IncomeTaxComputationReport({ employeeId }: { employeeId: number }) {
+  const { books, period } = useStore();
+  const nav = useNav();
+  const p = usePeriodKey();
+  const cfg = useReportOptions('income-tax-computation', 'Income Tax Computation', COMP_DEFS);
+  const [id, setId] = useState(employeeId);
+  const data = useLoad(() => incomeTaxComputation(books.db, id, period.to), [id, period]);
+  const change = () => nav.push(<PickEmployee onPick={(e) => setId(e.id)} />);
+  useScreen({ title: 'Income Tax Computation', keys: { ...p.key, ...cfg.key, F4: change }, buttons: [p.button, { key: 'F4', label: 'Employee', run: change }, cfg.button] });
+  if (!data) return null;
+  const e = data.employee;
+  const old = data.regime === 'old';
+  const fyLabel = `${fmtDate(data.fy_start)} to ${fmtDate(data.fy_end)}`;
+  const kv = (list: [string, string][]) =>
+    list.map(([k, v]) => (
+      <div key={k} className="flex">
+        <span className="w-56">{k}</span>
+        <span className="mr-2">:</span>
+        <span className="font-bold">{v}</span>
+      </div>
+    ));
+  type Row = { no?: string; label: string; inner?: number; amount?: number; italic?: boolean; bold?: boolean };
+  let n = 0;
+  const no = () => `${++n}.`;
+  const rows: Row[] = [
+    { no: no(), label: 'Gross Salary', amount: data.gross_salary, bold: true },
+    { label: 'Salary as per provisions contained in section 17(1)', inner: data.salary, italic: true },
+    ...(data.previous_salary ? [{ label: 'Salary from previous employer', inner: data.previous_salary, italic: true }] : []),
+    ...(old ? [{ no: no(), label: 'Less: Allowance to the extent exempt', amount: data.hra_exemption, bold: true }, { label: 'House Rent Allowance', inner: data.hra_exemption, italic: true }] : []),
+    { no: no(), label: 'Balance', amount: data.balance, bold: true },
+    { no: no(), label: `Deductions U/s ${data.act === '2025' ? '19' : '16'}`, amount: data.standard_deduction + data.professional_tax, bold: true },
+    { label: 'Standard Deduction', inner: data.standard_deduction, italic: true },
+    ...(old ? [{ label: 'Tax on Employment (Professional Tax)', inner: data.professional_tax, italic: true }] : []),
+    { no: no(), label: 'Total Income from Salary', amount: data.income_from_salary, bold: true },
+    { no: no(), label: 'Add: Other Income declared by Employee', amount: data.other_income - data.home_loan_interest, bold: true },
+    { label: 'Other Income (Other Sources)', inner: data.other_income, italic: true },
+    ...(old ? [{ label: 'Less: Interest on Housing Loan', inner: -data.home_loan_interest, italic: true }] : []),
+    { no: no(), label: 'Gross Total Income', amount: data.gross_total_income, bold: true },
+    ...(old ? [{ no: no(), label: 'Deductions under Chapter VI-A', amount: data.total_deductions, bold: true }, ...data.deductions.map((d) => ({ label: d.label, inner: d.allowed, italic: true }))] : []),
+    { no: no(), label: 'Total Income (rounded off)', amount: data.total_income, bold: true },
+    { no: no(), label: 'Tax on Total Income', amount: data.tax.slab_tax, bold: true },
+    { no: no(), label: `Less: Rebate U/s ${data.act === '2025' ? '156' : '87A'}`, amount: data.tax.rebate, bold: true },
+    { no: no(), label: 'Surcharge', amount: data.tax.surcharge, bold: true },
+    { no: no(), label: 'Health and Education Cess', amount: data.tax.cess, bold: true },
+    { no: no(), label: 'Tax Payable (rounded off)', amount: data.tax.total, bold: true },
+    { no: no(), label: 'Less: Tax deducted by previous employer', amount: data.previous_tds, bold: true },
+    { no: no(), label: `Less: Tax deducted till ${monthLabel(data.computed_for)}`, amount: data.deducted, bold: true },
+    { label: 'Balance Tax Payable / Deductible', amount: data.balance_tax, bold: true },
+  ];
+  return (
+    <Frame title="Income Tax Computation" subtitle={`Financial Year: ${fyLabel}`}>
+      <div className="mb-2">Income Tax Computation for : <b>{e.name}</b></div>
+      <div className="grid grid-cols-3 gap-4 border-y border-tb-line py-2">
+        <div>{kv([['Employee No.', e.emp_number], ['Gender', e.gender], ['Date of joining', e.date_of_joining ? fmtDate(e.date_of_joining) : ''], ['Date of Birth', e.date_of_birth ? fmtDate(e.date_of_birth) : '']])}</div>
+        <div>{kv([['PAN Number', e.pan || 'PANNOTAVBL'], ['Computed for the month', monthLabel(data.computed_for)], ['Tax Year', `${data.fy_start.slice(0, 4)}-${data.fy_end.slice(2, 4)}`], ['Act', data.act === '2025' ? 'Income-tax Act, 2025' : 'Income-tax Act, 1961']])}</div>
+        <div>{kv([['Total Income Tax', fmtAmount(data.tax.total, false)], ['Less: Deducted', fmtAmount(data.deducted + data.previous_tds, false)], ['Balance Deductible', fmtAmount(data.balance_tax, false)], [`Tax Per Month (${data.remaining_months} months)`, fmtAmount(data.monthly_tds, false)]])}</div>
+      </div>
+      <div className="py-1">Tax Regime : <b>{data.regime_label}</b></div>
+      <table className="w-full">
+        <thead>
+          <tr>
+            <th className={`${th} w-16 text-left`}>S.No</th>
+            <th className={`${th} text-left`}>Particulars</th>
+            <th className={`${th} text-right`}>Amount</th>
+            <th className={`${th} text-right`}>Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className={r.bold ? 'font-bold' : ''}>
+              <td className="px-2 text-right">{r.no ?? ''}</td>
+              <td className={`px-2 ${r.italic ? 'pl-10 italic' : ''}`}>{r.label}</td>
+              <td className={cell}>{r.inner !== undefined ? fmtAmount(r.inner) : ''}</td>
+              <td className={cell}>{r.amount !== undefined ? fmtAmount(r.amount, false) : ''}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {cfg.values.months && (
+        <table className="mt-5 w-full">
+          <thead>
+            <tr>
+              <th className={`${th} text-left`}>Month</th>
+              <th className={`${th} text-left`}>Basis</th>
+              <th className={`${th} text-right`}>Taxable Salary</th>
+              <th className={`${th} text-right`}>Employee PF</th>
+              <th className={`${th} text-right`}>Professional Tax</th>
+              <th className={`${th} text-right`}>Tax Deducted</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.months.map((m) => (
+              <tr key={m.month}>
+                <td className="px-2">{monthLabel(m.month)}</td>
+                <td className="px-2 italic">{m.basis}</td>
+                <td className={cell}>{fmtAmount(m.salary)}</td>
+                <td className={cell}>{fmtAmount(m.pf)}</td>
+                <td className={cell}>{fmtAmount(m.pt)}</td>
+                <td className={cell}>{fmtAmount(m.tds)}</td>
+              </tr>
+            ))}
+            <tr className="font-bold">
+              <td colSpan={2} className={`${rule} px-2`}>Total</td>
+              {(['salary', 'pf', 'pt', 'tds'] as const).map((k) => (
+                <td key={k} className={`${cell} ${rule}`}>{fmtAmount(data.months.reduce((s, m) => s + m[k], 0), false)}</td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
+      )}
+    </Frame>
+  );
+}
+
+const GRAT_DEFS = [
+  { key: 'eligible', label: 'Show only eligible employees', default: false },
+  { key: 'zero', label: 'Remove employees without gratuity wages', default: true },
+];
+
+const spanText = (s: { years: number; months: number; days: number }) => `${s.years} Y ${s.months} M ${s.days} D`;
+
+export function GratuityReport() {
+  const { books, period } = useStore();
+  const nav = useNav();
+  const p = usePeriodKey();
+  const cfg = useReportOptions('gratuity-report', 'Gratuity Report', GRAT_DEFS);
+  const flt = useFilter();
+  const data = useLoad(() => gratuityReport(books.db, period.to), [period]);
+  const rows = useMemo(
+    () => (data ?? []).filter((r) => (!cfg.values.zero || r.wages) && (!cfg.values.eligible || r.result?.eligible) && flt.match(r.employee)),
+    [data, cfg.values, flt]
+  );
+  const { sel, setSel, keys } = useSel(rows.length);
+  const open = (i: number) => rows[i] && nav.push(<EmployeeVouchersReport employeeId={rows[i].employee_id} />);
+  useScreen({ title: 'Gratuity Report', keys: { ...keys, ...p.key, ...cfg.key, ...flt.key, Enter: () => open(sel) }, buttons: [p.button, cfg.button, flt.button] });
+  if (!data) return null;
+  const total = (f: (r: (typeof rows)[number]) => number) => fmtAmount(rows.reduce((s, r) => s + f(r), 0), false);
+  return (
+    <Frame title="Gratuity Report" subtitle={`As on ${fmtDate(period.to)}`}>
+      {flt.bar}
+      <table className="w-full">
+        <thead>
+          <tr>
+            <th className={`${th} text-left`}>Employee</th>
+            <th className={`${th} text-left`}>Date of Joining</th>
+            <th className={`${th} text-left`}>Period of Service</th>
+            <th className={`${th} text-right`}>Last Drawn Wages</th>
+            <th className={`${th} text-right`}>Gratuity Years</th>
+            <th className={`${th} text-left`}>Eligible</th>
+            <th className={`${th} text-right`}>Gratuity Payable</th>
+            <th className={`${th} text-right`}>Accrued Liability</th>
+            <th className={`${th} text-right`}>Provided</th>
+            <th className={`${th} text-right`}>Provision Due</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={r.employee_id} className={rowCls(i === sel)} onMouseEnter={() => setSel(i)} onClick={() => open(i)}>
+              <td className="px-2">{r.employee}{r.fixed_term ? ' (Fixed term)' : ''}{r.date_of_leaving ? ` (Left ${fmtDate(r.date_of_leaving)})` : ''}</td>
+              <td className="px-2">{r.date_of_joining ? fmtDate(r.date_of_joining) : ''}</td>
+              <td className="px-2">{r.result ? spanText(r.span) : ''}</td>
+              <td className={cell}>{fmtAmount(r.wages)}</td>
+              <td className={cell}>{r.result?.years ?? ''}</td>
+              <td className="px-2">{r.result ? (r.result.eligible ? 'Yes' : 'No') : ''}</td>
+              <td className={cell}>{fmtAmount(r.result?.amount ?? 0)}{r.result?.capped ? ' *' : ''}</td>
+              <td className={cell}>{fmtAmount(r.result?.accrued ?? 0)}</td>
+              <td className={cell}>{fmtAmount(r.provided)}</td>
+              <td className={cell}>{fmtAmount(r.difference)}</td>
+            </tr>
+          ))}
+          <tr className="font-bold">
+            <td colSpan={6} className={`${rule} px-2`}>Grand Total</td>
+            <td className={`${cell} ${rule}`}>{total((r) => r.result?.amount ?? 0)}</td>
+            <td className={`${cell} ${rule}`}>{total((r) => r.result?.accrued ?? 0)}</td>
+            <td className={`${cell} ${rule}`}>{total((r) => r.provided)}</td>
+            <td className={`${cell} ${rule}`}>{total((r) => r.difference)}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div className="mt-2 text-xs text-tb-muted">
+        Gratuity = 15/26 x last drawn wages (pay heads marked for gratuity) x completed years (part above six months counts as a year), payable after 5 years of continuous service (1 year for fixed term employees), limited to the notified ceiling{rows.some((r) => r.result?.capped) ? ' (* ceiling applied)' : ''}. Accrued liability is pro-rata for completed months of service.
+      </div>
+      {rows.length === 0 && <div className="py-3 text-tb-muted">No employees with gratuity wages.</div>}
     </Frame>
   );
 }

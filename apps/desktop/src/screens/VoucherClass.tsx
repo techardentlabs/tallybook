@@ -188,7 +188,8 @@ function LineGrid({ section, ledgers, initial, heading, onAccept, onCancel }: { 
       initial={rows}
       fresh={fresh}
       width={760}
-      validate={(rs) => {
+      validate={(all) => {
+        const rs = all.filter((r) => r.id.ledger || (r.text.ledger ?? '').trim());
         for (const r of rs) {
           if (!r.id.ledger) return 'Ledger Name: choose from the list';
           if (!r.id.side || !r.id.calc) return 'Choose Dr/Cr and Type of Calculation';
@@ -197,9 +198,9 @@ function LineGrid({ section, ledgers, initial, heading, onAccept, onCancel }: { 
         }
         return null;
       }}
-      onAccept={(rs) =>
+      onAccept={(all) =>
         onAccept(
-          rs.map((r) => {
+          all.filter((r) => r.id.ledger).map((r) => {
             const calc = r.id.calc as ClassCalc;
             return {
               section,

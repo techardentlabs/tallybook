@@ -4,6 +4,26 @@ All notable changes to TallyBook are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Added
+- Multiple companies: each company has its own data file and its own TallyVault. Select Company at start-up, F3 to change company, Alt+F3 for Company Info (Select, Shut, Create, Alter, Change TallyVault), Ctrl+F3 to shut. Existing data opens as the first company without being moved.
+- Manufacturing: Bill of Materials on stock items (Set/Alter Components), Manufacturing Journal with components, co-products, by-products, scrap and additional costs, plus Cost Estimation, Job Costing and Material Requirement reports. Stock Journal gets Ctrl+H (Change Mode).
+- Batches in vouchers: with "Maintain batches" on in F11, invoices, delivery/receipt notes, rejections and stock journals ask for batch allocations for batch-wise items.
+- Price levels: "Enable multiple price levels" in F11, a "Price level applicable" field on party ledgers, and invoices fill the rate and discount from the price list after the quantity.
+- Voucher classes: a voucher type with classes asks for the class when a voucher is opened, and the class lines are filled in after the first amount.
+- Bill-wise details have a "Due Date, or Credit Days" column, defaulted from the ledger's credit period, with the "Check for credit days" limit enforced.
+- TDS and cost-centre details are asked again when a voucher is altered, with the earlier allocations filled in.
+
+### Changed
+- Post-dated vouchers stay out of ledger balances and ledger reports until their date.
+- Stock vouchers show "Inventory Voucher Creation" in the title strip.
+
+### Fixed
+- Batch Summary values each batch by its share of the line instead of the whole line value.
+- Typing works in batch allocation and other popups that block the keys behind them.
+- Popups with a list no longer sit under the "List of …" panel, and list headings no longer read "List of List of …".
+- Turning on inventory could fail with a duplicate voucher type error.
+- F3, Alt+F3 and Ctrl+F3 ask before discarding an unsaved voucher.
+
 ## [0.1.5] - 2026-11-03
 
 ### Added

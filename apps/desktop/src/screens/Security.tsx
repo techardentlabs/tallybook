@@ -21,10 +21,11 @@ import {
   securityLevel,
   securityLevels,
   securityUsers,
-  sortedCompanyRefs,
+  companyEntryLabel,
+  sortedCompanyEntries,
   type AccessName,
-  type CompanyList,
-  type CompanyRef,
+  type CompanyEntry,
+  type CompanyIndex,
   type PasswordPolicy,
   type SecurityRole,
 } from '@tallybook/core';
@@ -35,6 +36,7 @@ import { useDialogs } from '../ui/Dialogs.tsx';
 import { Frame, th, rowCls, useLoad, useSel } from './Reports.tsx';
 import { MiniForm, useSecurity, type MiniRow, type MiniValues } from './Login.tsx';
 import { vault } from '../db/index.ts';
+import { SelectList } from './SelectList.tsx';
 
 const yn = (b: boolean) => (b ? 'Yes' : 'No');
 const isYes = (s: string) => s === 'Yes';
@@ -52,7 +54,7 @@ function Titled({ title, children, width = 640 }: { title: string; children: Rea
   );
 }
 
-const VAULT_WARNING = 'There is no way to recover a lost TallyVault password. If it is forgotten, the company data and its encrypted backups cannot be opened by anyone.';
+export const VAULT_WARNING = 'There is no way to recover a lost TallyVault password. If it is forgotten, the company data and its encrypted backups cannot be opened by anyone.';
 
 export function CompanySecurityScreen() {
   const { books, bump, toast, company } = useStore();
@@ -640,31 +642,32 @@ export function EditLogScreen() {
   );
 }
 
-export function SelectCompanyScreen({ list, onOpen, onCreate }: { list: CompanyList; onOpen: (c: CompanyRef) => void; onCreate?: () => void }) {
-  const items = sortedCompanyRefs(list);
-  const { sel, setSel, keys } = useSel(items.length);
-  useScreen({
-    title: 'Select Company',
-    noPeriod: true,
-    keys: { ...keys, Enter: () => items[sel] && onOpen(items[sel]), ...(onCreate ? { 'Alt+C': onCreate } : {}) },
-    buttons: [
-      { key: 'Enter', label: 'Open', run: () => items[sel] && onOpen(items[sel]) },
-      ...(onCreate ? [{ key: 'Alt+C', label: 'Create Company', run: onCreate }] : []),
-    ],
-  });
+export function SelectCompanyScreen({
+  title = 'Select Company',
+  index,
+  onOpen,
+  onCreate,
+}: {
+  title?: string;
+  index: CompanyIndex;
+  onOpen: (c: CompanyEntry) => void;
+  onCreate?: () => void;
+}) {
+  const entries = sortedCompanyEntries(index);
+  const period = (c: CompanyEntry) => (c.fy_start && c.fy_end ? `${fmtDate(c.fy_start)} to ${fmtDate(c.fy_end)}` : '');
+  const items = entries.map((c) => ({ id: c.id, label: companyEntryLabel(c), sub: [`(${c.id})`, period(c)].filter(Boolean).join('\u00a0\u00a0\u00a0') }));
   return (
-    <div className="w-[480px] border border-tb-line bg-tb-menu">
-      <div className="bg-tb-top px-2 py-1 text-[15px] text-white">List of Companies</div>
-      <ul>
-        {items.map((c, i) => (
-          <li key={c.id} className={`flex cursor-pointer justify-between px-2 py-px ${i === sel ? 'bg-tb-sel' : ''}`} onMouseEnter={() => setSel(i)} onClick={() => onOpen(c)}>
-            <b>{c.name}</b>
-            <i className="text-xs">{c.path}</i>
-          </li>
-        ))}
-        {items.length === 0 && <li className="px-2 py-1 text-tb-muted">No companies</li>}
-      </ul>
-    </div>
+    <SelectList
+      title={title}
+      heading="List of Companies"
+      items={items}
+      empty="No companies"
+      onCreate={onCreate}
+      onSelect={(it) => {
+        const c = entries.find((e) => e.id === it.id);
+        if (c) onOpen(c);
+      }}
+    />
   );
 }
 

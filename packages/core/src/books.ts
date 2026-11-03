@@ -27,6 +27,8 @@ export interface Company {
   inventory_enabled: number;
   payroll_enabled: number;
   cost_centres_enabled: number;
+  price_levels_enabled: number;
+  batches_enabled: number;
 }
 
 export interface Group {
@@ -102,6 +104,7 @@ export interface Ledger {
   is_ecommerce: number;
   rounding_limit: number;
   auto_reconcile: number;
+  currency_id: number;
 }
 
 export interface VoucherType {
@@ -308,7 +311,7 @@ export class Books {
           m.bill_wise ? 1 : 0, m.inventory_enabled ? 1 : 0,
         ],
       },
-      { sql: 'UPDATE company SET payroll_enabled = ?, cost_centres_enabled = ? WHERE id = 1', params: [m.payroll_enabled ? 1 : 0, m.cost_centres_enabled ? 1 : 0] },
+      { sql: 'UPDATE company SET payroll_enabled = ?, cost_centres_enabled = ?, price_levels_enabled = ?, batches_enabled = ? WHERE id = 1', params: [m.payroll_enabled ? 1 : 0, m.cost_centres_enabled ? 1 : 0, m.price_levels_enabled ? 1 : 0, m.batches_enabled ? 1 : 0] },
     ]);
     return (await this.company())!;
   }

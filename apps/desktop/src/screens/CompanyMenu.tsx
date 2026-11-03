@@ -2,15 +2,24 @@ import { MenuCard, useMenu, type MenuItem } from '../ui/Menu.tsx';
 import { useScreen } from '../registry.ts';
 import { useNav } from '../nav.tsx';
 import { CompanyAlter } from './Features.tsx';
+import { useStore } from '../store.tsx';
+import { createAnotherCompany } from '../db/companies.ts';
+import { ChangeVaultScreen, CompanyListScreen, useShutCompany } from './Companies.tsx';
 import { TdsDeductorForm } from './Tds.tsx';
 import { ChangePasswordScreen, ChangeUserScreen } from './Login.tsx';
 import { CompanySecurityScreen, PasswordPolicyScreen, SecurityControlScreen, UserRolesScreen, UsersAndPasswordsScreen } from './Security.tsx';
 
 export function CompanyMenu() {
   const nav = useNav();
+  const { toast } = useStore();
+  const shut = useShutCompany();
   const items: MenuItem[] = [
     { label: 'Company', heading: true },
+    { label: 'Create', run: () => void createAnotherCompany().catch((e) => toast((e as Error).message, 'err')), hotkey: 'E', hotAt: 2 },
     { label: 'Alter', run: () => nav.push(<CompanyAlter />), hotkey: 'A' },
+    { label: 'Select', run: () => nav.push(<CompanyListScreen title="Select Company" />), hotkey: 'L', hotAt: 2 },
+    { label: 'Shut Company', run: () => void shut(), hotkey: 'M', hotAt: 7 },
+    { label: 'Change TallyVault', run: () => nav.push(<ChangeVaultScreen />), hotkey: 'V', hotAt: 12 },
     { label: 'TDS Deductor Details', run: () => nav.push(<TdsDeductorForm />), hotkey: 'T' },
     { label: 'Security', heading: true },
     { label: 'Users and Passwords', run: () => nav.push(<UsersAndPasswordsScreen />), hotkey: 'U' },

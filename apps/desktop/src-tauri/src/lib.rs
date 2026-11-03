@@ -11,15 +11,28 @@ use tauri::{Manager, State};
 const WRONG_PASSWORD: &str = "Incorrect TallyVault password";
 const LOCKED: &str = "The company data is locked. Enter the TallyVault password first.";
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
+const NO_COMPANY: &str = "No company is open";
+const LEGACY_FILE: &str = "tallybook.db";
+const INDEX_FILE: &str = "companies.json";
+const COMPANY_DIR: &str = "companies";
 
 struct Inner {
+    path: Option<PathBuf>,
     conn: Option<Connection>,
     encrypted: bool,
 }
 
 struct Db {
-    path: PathBuf,
+    root: PathBuf,
     inner: Mutex<Inner>,
+}
+
+#[derive(Serialize)]
+struct CompanyIndexFile {
+    text: Option<String>,
+    legacy: bool,
+    files: Vec<String>,
+    root: String,
 }
 
 #[derive(Deserialize)]
@@ -32,6 +45,43 @@ struct Stmt {
 struct VaultStatus {
     encrypted: bool,
     open: bool,
+}
+
+fn valid_company_file(file: &str) -> bool {
+    if file == LEGACY_FILE {
+        return true;
+    }
+    let Some(rest) = file.strip_prefix("companies/") else {
+        return false;
+    };
+    let Some(num) = rest.strip_suffix(".db") else {
+        return false;
+    };
+    !num.is_empty() && num.len() <= 12 && num.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn company_path(root: &Path, file: &str) -> Result<PathBuf, String> {
+    if !valid_company_file(file) {
+        return Err("The company data file name is not valid".into());
+    }
+    let mut p = root.to_path_buf();
+    for part in file.split('/') {
+        p.push(part);
+    }
+    Ok(p)
+}
+
+fn company_files(root: &Path) -> Vec<String> {
+    let Ok(rd) = fs::read_dir(root.join(COMPANY_DIR)) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = rd
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str().map(|n| format!("{COMPANY_DIR}/{n}")))
+        .filter(|f| valid_company_file(f))
+        .collect();
+    out.sort();
+    out
 }
 
 fn to_sql(v: &Value) -> Result<SqlValue, String> {
@@ -187,9 +237,11 @@ fn db_vault_status(state: State<Db>) -> Result<VaultStatus, String> {
 fn db_unlock(state: State<Db>, password: String) -> Result<(), String> {
     let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
     if guard.conn.is_some() {
-        return if !guard.encrypted || key_matches(&state.path, &password) { Ok(()) } else { Err(WRONG_PASSWORD.into()) };
+        let path = guard.path.clone().ok_or_else(|| NO_COMPANY.to_string())?;
+        return if !guard.encrypted || key_matches(&path, &password) { Ok(()) } else { Err(WRONG_PASSWORD.into()) };
     }
-    let conn = if guard.encrypted { open_conn(&state.path, Some(&password))? } else { open_conn(&state.path, None)? };
+    let path = guard.path.clone().ok_or_else(|| NO_COMPANY.to_string())?;
+    let conn = if guard.encrypted { open_conn(&path, Some(&password))? } else { open_conn(&path, None)? };
     guard.conn = Some(conn);
     Ok(())
 }
@@ -200,7 +252,8 @@ fn db_vault_verify(state: State<Db>, password: String) -> Result<bool, String> {
     if !guard.encrypted {
         return Ok(false);
     }
-    Ok(key_matches(&state.path, &password))
+    let path = guard.path.clone().ok_or_else(|| NO_COMPANY.to_string())?;
+    Ok(key_matches(&path, &password))
 }
 
 #[tauri::command]
@@ -209,14 +262,14 @@ fn db_vault_set(state: State<Db>, current: String, password: String) -> Result<(
     if guard.conn.is_none() {
         return Err(LOCKED.into());
     }
+    let path = guard.path.clone().ok_or_else(|| NO_COMPANY.to_string())?;
     let was_encrypted = guard.encrypted;
-    if was_encrypted && !key_matches(&state.path, &current) {
+    if was_encrypted && !key_matches(&path, &current) {
         return Err(WRONG_PASSWORD.into());
     }
     if !was_encrypted && password.is_empty() {
         return Ok(());
     }
-    let path = state.path.clone();
     let tmp = sidecar(&path, ".vault-tmp");
     let _ = fs::remove_file(&tmp);
     remove_sidecars(&tmp);
@@ -247,6 +300,61 @@ fn db_vault_set(state: State<Db>, current: String, password: String) -> Result<(
     Ok(())
 }
 
+#[tauri::command]
+fn company_index_load(state: State<Db>) -> Result<CompanyIndexFile, String> {
+    let path = state.root.join(INDEX_FILE);
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.to_string()),
+    };
+    let legacy = state.root.join(LEGACY_FILE).is_file();
+    Ok(CompanyIndexFile { text, legacy, files: company_files(&state.root), root: state.root.to_string_lossy().into_owned() })
+}
+
+#[tauri::command]
+fn company_index_save(state: State<Db>, text: String) -> Result<(), String> {
+    serde_json::from_str::<Value>(&text).map_err(|e| e.to_string())?;
+    let path = state.root.join(INDEX_FILE);
+    let tmp = state.root.join(format!("{INDEX_FILE}.tmp"));
+    {
+        let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        std::io::Write::write_all(&mut f, text.as_bytes()).map_err(|e| e.to_string())?;
+        f.sync_all().map_err(|e| e.to_string())?;
+    }
+    fs::rename(&tmp, &path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        e.to_string()
+    })
+}
+
+#[tauri::command]
+fn company_open(state: State<Db>, file: String) -> Result<VaultStatus, String> {
+    let path = company_path(&state.root, &file)?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
+    if let Some(old) = guard.conn.take() {
+        if let Err((conn, e)) = old.close() {
+            guard.conn = Some(conn);
+            return Err(e.to_string());
+        }
+    }
+    guard.path = None;
+    guard.encrypted = false;
+    let tmp = sidecar(&path, ".vault-tmp");
+    let _ = fs::remove_file(&tmp);
+    remove_sidecars(&tmp);
+    let encrypted = file_is_encrypted(&path)?;
+    let conn = if encrypted { None } else { Some(open_conn(&path, None)?) };
+    let open = conn.is_some();
+    guard.path = Some(path);
+    guard.encrypted = encrypted;
+    guard.conn = conn;
+    Ok(VaultStatus { encrypted, open })
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -256,16 +364,20 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            let path = dir.join("tallybook.db");
-            let tmp = sidecar(&path, ".vault-tmp");
-            let _ = fs::remove_file(&tmp);
-            remove_sidecars(&tmp);
-            let encrypted = file_is_encrypted(&path)?;
-            let conn = if encrypted { None } else { Some(open_conn(&path, None)?) };
-            app.manage(Db { path, inner: Mutex::new(Inner { conn, encrypted }) });
+            app.manage(Db { root: dir, inner: Mutex::new(Inner { path: None, conn: None, encrypted: false }) });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![db_select, db_batch, db_vault_status, db_unlock, db_vault_verify, db_vault_set])
+        .invoke_handler(tauri::generate_handler![
+            db_select,
+            db_batch,
+            db_vault_status,
+            db_unlock,
+            db_vault_verify,
+            db_vault_set,
+            company_index_load,
+            company_index_save,
+            company_open
+        ])
         .run(tauri::generate_context!())
         .expect("error while running TallyBook");
 }

@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { STATES, todayIso } from '@tallybook/core';
 import { Form, type FormHandle, type FieldDef } from '../ui/Form.tsx';
 import { useScreen } from '../registry.ts';
@@ -6,6 +6,7 @@ import { useStore } from '../store.tsx';
 import { useNav } from '../nav.tsx';
 import { Gateway } from './Gateway.tsx';
 import { isValidGstin } from '@tallybook/core';
+import { currentCompanyEntry, loadCompanyIndex, noteCompanyOpened, shutCompany } from '../db/companies.ts';
 
 function defaultFyStart(): string {
   const t = todayIso();
@@ -17,6 +18,12 @@ export function CompanyCreate() {
   const { books, reloadCompany, toast } = useStore();
   const nav = useNav();
   const form = useRef<FormHandle>(null);
+  const [others, setOthers] = useState(0);
+  useEffect(() => {
+    void loadCompanyIndex()
+      .then((i) => setOthers(i.companies.filter((c) => c.id !== currentCompanyEntry()?.id).length))
+      .catch(() => setOthers(0));
+  }, []);
   const stateOpts = STATES.map((s) => ({ id: s.code, label: s.name, sub: s.code }));
 
   const fields: FieldDef[] = [
@@ -62,7 +69,8 @@ export function CompanyCreate() {
         gstin: v.gst_enabled ? v.gstin : '',
         pan: v.pan,
       });
-      await reloadCompany();
+      const created = await reloadCompany();
+      await noteCompanyOpened(created).catch((e) => toast(`Company created, but the list of companies could not be updated: ${(e as Error).message}`, 'err'));
       toast('Company created', 'ok');
       nav.reset(<Gateway />);
     } catch (e) {
@@ -73,7 +81,13 @@ export function CompanyCreate() {
   useScreen({
     title: 'Company Creation',
     noPeriod: true,
-    keys: { 'Ctrl+A': () => void create() },
+    keys: {
+      'Ctrl+A': () => void create(),
+      Escape: () => {
+        if (!others || nav.depth > 1) return false;
+        void shutCompany().catch((e) => toast((e as Error).message, 'err'));
+      },
+    },
     buttons: [{ key: 'Ctrl+A', label: 'Accept', run: () => void create() }],
   });
 

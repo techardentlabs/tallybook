@@ -35,7 +35,7 @@ export function ListPanel({
   useEffect(measure, [items.length, sel]);
   return (
     <div className="fixed bottom-6 right-0 top-[98px] z-[60] flex w-[400px] flex-col border-l border-tb-line bg-tb-menu shadow-[-1px_0_4px_rgba(0,0,0,.15)]">
-      <div className="bg-tb-top px-2 py-1 text-[15px] text-white">List of {title}</div>
+      <div className="bg-tb-top px-2 py-1 text-[15px] text-white">{/^List of /.test(title) ? title : `List of ${title}`}</div>
       <div className="mt-3 pr-2 text-right text-[14px] leading-[20px]">{create ?? ' '}</div>
       <ul ref={list} onScroll={measure} className="min-h-0 flex-1 overflow-auto">
         {items.length === 0 ? (

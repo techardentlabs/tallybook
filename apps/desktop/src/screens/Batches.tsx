@@ -59,6 +59,10 @@ export function BatchAllocationDialog({ item, godownId, qty, outward, asOf, init
   const cols = showDates ? ['batch', 'mfg', 'exp', 'qty'] : ['batch', 'qty'];
   const focus = (r: number, c: string) => setTimeout(() => refs.current[`${r}:${c}`]?.focus(), 0);
   const total = rows.reduce((s, r) => s + (parseQty(r.qty) ?? 0), 0);
+  useEffect(() => {
+    const t = setTimeout(() => refs.current['0:batch']?.focus(), 50);
+    return () => clearTimeout(t);
+  }, []);
   const accept = () => {
     try {
       const out: BatchAllocInput[] = [];
@@ -109,7 +113,7 @@ export function BatchAllocationDialog({ item, godownId, qty, outward, asOf, init
   };
   const opts: Opt[] = (options ?? []).map((o) => ({ id: o.id, label: o.label, sub: o.sub }));
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/10 pt-24">
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/10 pr-[400px] pt-24">
       <div className="min-w-[640px] border border-tb-line bg-tb-paper shadow-lg">
         <div className="bg-tb-top px-2 py-1 text-white">{title ?? 'Batch Allocations'}</div>
         <div className="px-3 py-2">

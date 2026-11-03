@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DEDUCTEE_TYPES,
+  IT_ACT_2025_FROM,
+  actName,
   deleteNature,
+  deleteNatureVersion,
+  natureVersions,
+  naturesOn,
+  saveNatureVersion,
   ensureStatutory,
   fmtAmount,
   fmtDate,
@@ -144,16 +150,18 @@ export function TdsDeductorForm() {
 export function NatureOfPaymentForm({ id, kind = 'TDS' }: { id?: number; kind?: TaxKind }) {
   const { books } = useStore();
   const ready = useStatutoryReady();
-  const list = useLoad(() => (ready ? natures(books.db) : Promise.resolve(null)), [ready]);
-  if (!list) return null;
-  const cur = id ? list.find((n) => n.id === id) : undefined;
+  const data = useLoad(async () => (ready ? { list: await natures(books.db), versions: id ? await natureVersions(books.db, id) : [] } : null), [ready, id]);
+  if (!data) return null;
+  const cur = id ? data.list.find((n) => n.id === id) : undefined;
+  const ver = data.versions.find((x) => x.effective_from === IT_ACT_2025_FROM) ?? data.versions[data.versions.length - 1];
+  const has2025 = (v: Record<string, any>) => !!String(v.section_2025 ?? '').trim();
   return (
     <FormScreen
       title={`${kind} Nature of Payment ${cur ? 'Alteration' : 'Creation'}`}
       labelWidth={260}
       fields={[
         { key: 'name', label: 'Name', kind: 'text', required: true, initial: cur?.name },
-        { key: 'section', label: 'Section', kind: 'text', initial: cur?.section },
+        { key: 'section', label: 'Section (Income-tax Act, 1961)', kind: 'text', initial: cur?.section },
         { key: 'payment_code', label: 'Payment code', kind: 'text', initial: cur?.payment_code },
         { key: 'remittance_code', label: 'Remittance code', kind: 'text', initial: cur?.remittance_code },
         { key: 'ind_pan', label: 'With PAN', kind: 'text', initial: pct(cur?.rate_ind_pan_bp ?? 0), heading: 'Rate for individuals/HUF' },
@@ -161,9 +169,17 @@ export function NatureOfPaymentForm({ id, kind = 'TDS' }: { id?: number; kind?: 
         { key: 'oth_pan', label: 'With PAN', kind: 'text', initial: pct(cur?.rate_oth_pan_bp ?? 0), heading: 'Rate for other deductee types' },
         { key: 'oth_nopan', label: 'Without PAN', kind: 'text', initial: pct(cur?.rate_oth_nopan_bp ?? 0) },
         { key: 'threshold', label: 'Threshold/exemption limit', kind: 'amount', initial: cur?.threshold || 0 },
+        { key: 'section_2025', label: 'Section (Income-tax Act, 2025)', kind: 'text', initial: ver?.section ?? '', heading: 'Income-tax Act, 2025 Details', note: 'Used for transactions dated on or after the applicable date' },
+        { key: 'from_2025', label: 'Applicable from', kind: 'date', initial: ver?.effective_from ?? IT_ACT_2025_FROM, visible: has2025 },
+        { key: 'code_2025', label: 'Payment code', kind: 'text', initial: ver?.payment_code ?? '', visible: has2025 },
+        { key: 'ind_pan_2025', label: 'Rate for individuals/HUF with PAN', kind: 'text', initial: pct(ver?.rate_ind_pan_bp ?? cur?.rate_ind_pan_bp ?? 0), visible: has2025 },
+        { key: 'ind_nopan_2025', label: 'Rate for individuals/HUF without PAN', kind: 'text', initial: pct(ver?.rate_ind_nopan_bp ?? cur?.rate_ind_nopan_bp ?? 0), visible: has2025 },
+        { key: 'oth_pan_2025', label: 'Rate for other deductee types with PAN', kind: 'text', initial: pct(ver?.rate_oth_pan_bp ?? cur?.rate_oth_pan_bp ?? 0), visible: has2025 },
+        { key: 'oth_nopan_2025', label: 'Rate for other deductee types without PAN', kind: 'text', initial: pct(ver?.rate_oth_nopan_bp ?? cur?.rate_oth_nopan_bp ?? 0), visible: has2025 },
+        { key: 'threshold_2025', label: 'Threshold/exemption limit', kind: 'amount', initial: ver?.threshold ?? cur?.threshold ?? 0, visible: has2025 },
       ]}
       onSave={async (v) => {
-        await saveNature(
+        const saved = await saveNature(
           books.db,
           {
             name: String(v.name),
@@ -182,6 +198,20 @@ export function NatureOfPaymentForm({ id, kind = 'TDS' }: { id?: number; kind?: 
           },
           cur?.id
         );
+        if (has2025(v))
+          await saveNatureVersion(books.db, saved.id, {
+            effective_from: String(v.from_2025 || IT_ACT_2025_FROM),
+            act: '2025',
+            section: String(v.section_2025),
+            payment_code: String(v.code_2025 ?? ''),
+            rate_ind_pan_bp: toBp(v.ind_pan_2025),
+            rate_ind_nopan_bp: toBp(v.ind_nopan_2025),
+            rate_oth_pan_bp: toBp(v.oth_pan_2025),
+            rate_oth_nopan_bp: toBp(v.oth_nopan_2025),
+            threshold: Number(v.threshold_2025) || 0,
+            single_threshold: ver?.single_threshold ?? cur?.single_threshold ?? 0,
+          });
+        else if (ver) await deleteNatureVersion(books.db, ver.id);
         return 'TDS nature of payment saved';
       }}
       onDelete={cur ? () => deleteNature(books.db, cur.id) : undefined}
@@ -193,13 +223,18 @@ export function NatureOfPaymentList({ kind = 'TDS', onPick, popOnSelect = false 
   const { books, version } = useStore();
   const nav = useNav();
   const ready = useStatutoryReady();
-  const list = useLoad(() => (ready ? natures(books.db, kind) : Promise.resolve(null)), [ready, kind, version]);
+  const list = useLoad(async () => {
+    if (!ready) return null;
+    const nats = await natures(books.db, kind);
+    const later = new Map((await naturesOn(books.db, '9999-12-31', kind)).map((n) => [n.id, n.section]));
+    return nats.map((n) => ({ ...n, sub: later.get(n.id) && later.get(n.id) !== n.section ? `${n.section} / ${later.get(n.id)}` : n.section }));
+  }, [ready, kind, version]);
   return (
     <SelectList
       title={kind === 'TDS' ? 'TDS Nature of Payments' : 'TCS Nature of Goods'}
       heading={kind === 'TDS' ? 'List of TDS Nature of Payments' : 'List of TCS Nature of Goods'}
       popOnSelect={popOnSelect}
-      items={(list ?? []).map((n) => ({ id: n.id, label: n.name }))}
+      items={(list ?? []).map((n) => ({ id: n.id, label: n.name, sub: n.sub }))}
       onSelect={(i) => (onPick ? onPick(list!.find((n) => n.id === i.id)!) : nav.push(<NatureOfPaymentForm id={Number(i.id)} kind={kind} />))}
       onCreate={() => nav.push(<NatureOfPaymentForm kind={kind} />)}
     />
@@ -326,7 +361,8 @@ export function TdsDetailsScreen({ partyId, amount, date, excludeVoucherId, onDo
           <div className="flex justify-between border-b border-tb-line px-2"><span>Assessable value</span><span className="tabular-nums">{fmtAmount(amount)}</span></div>
           <div className="flex justify-between px-2"><span>Taxable value</span><span className="tabular-nums">{fmtAmount(plan.plan.base)}</span></div>
           <div className="flex justify-between px-2"><span>TDS rate</span><span>{plan.plan.rate_bp / 100} %</span></div>
-          <div className="flex justify-between px-2"><span>Section</span><span>{data.nats.find((n) => n.id === plan.plan.nature_id)?.section}</span></div>
+          <div className="flex justify-between px-2"><span>Section</span><span>{plan.plan.section}</span></div>
+          <div className="flex justify-between px-2"><span>Act</span><span>{actName(plan.plan.act)}</span></div>
           {plan.plan.surcharge ? <div className="flex justify-between px-2"><span>Surcharge</span><span className="tabular-nums">{fmtAmount(plan.plan.surcharge)}</span></div> : null}
           {plan.plan.cess ? <div className="flex justify-between px-2"><span>Cess</span><span className="tabular-nums">{fmtAmount(plan.plan.cess)}</span></div> : null}
           <div className="flex justify-between border-y-[3px] border-double border-tb-ink px-2 font-bold"><span>TDS amount</span><span className="tabular-nums">{fmtAmount(plan.plan.total, false)}</span></div>
@@ -351,7 +387,7 @@ export function TdsOutstandingsReport({ kind = 'TDS', byParty = false }: { kind?
   const ready = useStatutoryReady();
   const data = useLoad(async () => {
     if (!ready) return null;
-    const nats = await natures(books.db);
+    const nats = await naturesOn(books.db, period.to);
     return byParty
       ? { nats, rows: null, parties: await tdsOutstandingByParty(books.db, period.from, period.to, kind) }
       : { nats, rows: await tdsOutstandingByNature(books.db, period.from, period.to, kind), parties: null };
@@ -718,15 +754,18 @@ export function Form26QReport() {
       ['Date', 'Deductee', 'PAN', 'Section', 'Deductee Type', 'Amount Paid', 'Rate %', 'TDS', 'Surcharge', 'Cess', 'Total Tax', 'Deposited', 'Challan No.', 'BSR Code'],
       ...rows.map((r) => [r.date, r.party, r.pan, r.section, r.deductee_type, fmtAmount(r.gross), String(r.rate_bp / 100), fmtAmount(r.tax), fmtAmount(r.surcharge), fmtAmount(r.cess), fmtAmount(r.total), fmtAmount(r.deposited), r.challan_no, r.bsr_code]),
     ];
-    if (await saveTextFile('Form26Q.csv', lines.map((l) => l.map(csvEscape).join(',')).join('\n'), 'text/csv')) toast('Exported', 'ok');
+    if (await saveTextFile(`Form${data.form}.csv`, lines.map((l) => l.map(csvEscape).join(',')).join('\n'), 'text/csv')) toast('Exported', 'ok');
   };
   useScreen({
-    title: 'Form 26Q',
+    title: data?.form === '140' ? 'Form 140' : 'Form 26Q',
     keys: { ...keys, ...p.key, ...flt.key, 'Alt+E': () => void exportCsv() },
     buttons: [p.button, flt.button, { key: 'Alt+E', label: 'Export (CSV)', run: () => void exportCsv() }],
   });
   return (
-    <Frame title="Form 26Q - Deduction Summary" subtitle={`TAN: ${data?.tan ?? ''}   ${fmtDate(period.from)} to ${fmtDate(period.to)}`}>
+    <Frame
+      title={data?.form === '140' ? 'Form 140 (Earlier Form 26Q) - Deduction Summary' : 'Form 26Q - Deduction Summary'}
+      subtitle={`TAN: ${data?.tan ?? ''}   ${actName(data?.act ?? '1961')}   ${fmtDate(period.from)} to ${fmtDate(period.to)}`}
+    >
       {flt.bar}
       <table className="w-full">
         <thead>

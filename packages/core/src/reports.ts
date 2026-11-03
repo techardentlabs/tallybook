@@ -1,5 +1,6 @@
 import { stockSummary, type StockRow } from './inventory.ts';
 import { CoreError, one, type Db } from './db.ts';
+import { todayIso } from './util.ts';
 import type { Group } from './books.ts';
 
 export interface Totals {
@@ -48,7 +49,14 @@ function rootNature(tree: Tree, groupId: number): Group['nature'] {
   return g.nature;
 }
 
+export async function postDatedCut(db: Db, alias = 'v', today = todayIso()): Promise<{ sql: string; params: string[] }> {
+  const has = await one(db, "SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'bank_allocs'");
+  if (!has) return { sql: '', params: [] };
+  return { sql: ` AND NOT (${alias}.date > ? AND EXISTS (SELECT 1 FROM bank_allocs pa WHERE pa.voucher_id = ${alias}.id AND pa.post_dated = 1))`, params: [today] };
+}
+
 async function ledgerStats(db: Db, tree: Tree, from: string, to: string): Promise<LedgerStat[]> {
+  const cut = await postDatedCut(db);
   const rows = await db.select<{ id: number; name: string; group_id: number; opening: number; pre: number; dr: number; cr: number }>(
     `SELECT l.id, l.name, l.group_id, l.opening,
        COALESCE(SUM(CASE WHEN v.date < ? THEN e.amount END), 0) AS pre,
@@ -56,10 +64,10 @@ async function ledgerStats(db: Db, tree: Tree, from: string, to: string): Promis
        COALESCE(SUM(CASE WHEN v.date >= ? AND v.date <= ? AND e.amount < 0 THEN -e.amount END), 0) AS cr
      FROM ledgers l
      LEFT JOIN entries e ON e.ledger_id = l.id
-     LEFT JOIN vouchers v ON v.id = e.voucher_id
+     LEFT JOIN vouchers v ON v.id = e.voucher_id${cut.sql}
      GROUP BY l.id
      ORDER BY l.name COLLATE NOCASE`,
-    [from, from, to, from, to]
+    [from, from, to, from, to, ...cut.params]
   );
   return rows.map((r) => {
     const nature = rootNature(tree, r.group_id);
@@ -364,6 +372,7 @@ export async function ledgerVouchers(db: Db, ledgerId: number, from: string, to:
   if (!ledger) throw new CoreError('not_found', 'Ledger not found');
   const tree = await loadTree(db);
   const stat = (await ledgerStats(db, tree, from, to)).find((s) => s.id === ledgerId)!;
+  const cut = await postDatedCut(db);
   const rows = await db.select<{ voucher_id: number; date: string; number: string; type: string; amount: number; particulars: string | null }>(
     `SELECT v.id AS voucher_id, v.date, v.number, t.name AS type, e.amount,
        (SELECT l2.name FROM entries e2 JOIN ledgers l2 ON l2.id = e2.ledger_id
@@ -372,9 +381,9 @@ export async function ledgerVouchers(db: Db, ledgerId: number, from: string, to:
      FROM entries e
      JOIN vouchers v ON v.id = e.voucher_id
      JOIN voucher_types t ON t.id = v.type_id
-     WHERE e.ledger_id = ? AND v.date >= ? AND v.date <= ?
+     WHERE e.ledger_id = ? AND v.date >= ? AND v.date <= ?${cut.sql}
      ORDER BY v.date, v.id, e.seq`,
-    [ledgerId, from, to]
+    [ledgerId, from, to, ...cut.params]
   );
   let running = stat.opening;
   const lines = rows.map((r) => {

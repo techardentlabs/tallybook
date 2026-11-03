@@ -94,6 +94,25 @@ export const TDS_SCHEMA: string[] = [
     total INTEGER NOT NULL,
     UNIQUE (voucher_id, nature_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS tds_nature_versions (
+    id INTEGER PRIMARY KEY,
+    nature_id INTEGER NOT NULL REFERENCES tds_nature(id) ON DELETE CASCADE,
+    effective_from TEXT NOT NULL,
+    act TEXT NOT NULL DEFAULT '2025',
+    section TEXT NOT NULL DEFAULT '',
+    payment_code TEXT NOT NULL DEFAULT '',
+    rate_ind_pan_bp INTEGER NOT NULL DEFAULT 0,
+    rate_ind_nopan_bp INTEGER NOT NULL DEFAULT 0,
+    rate_oth_pan_bp INTEGER NOT NULL DEFAULT 0,
+    rate_oth_nopan_bp INTEGER NOT NULL DEFAULT 0,
+    threshold INTEGER NOT NULL DEFAULT 0,
+    single_threshold INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (nature_id, effective_from)
+  )`,
+  `CREATE TABLE IF NOT EXISTS tds_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+  )`,
   `CREATE TABLE IF NOT EXISTS tds_challans (
     id INTEGER PRIMARY KEY,
     voucher_id INTEGER REFERENCES vouchers(id) ON DELETE SET NULL,
@@ -183,22 +202,155 @@ const SEED: Seed[] = [
   ['Sale of Motor Vehicle Exceeding Ten Lakh Rupees', 'TCS', '206C(1F)', '', 100, 500, 100, 500, 1000000 * L, 0],
 ];
 
+export const IT_ACT_2025_FROM = '2026-04-01';
+export type TaxAct = '1961' | '2025';
+export const actOn = (date: string): TaxAct => (date >= IT_ACT_2025_FROM ? '2025' : '1961');
+export const actName = (act: string) => (act === '2025' ? 'Income-tax Act, 2025' : 'Income-tax Act, 1961');
+
+type VersionSeed = [string, string, number, number, number, number, number, number];
+const SEED_2025: VersionSeed[] = [
+  ['Commission Or Brokerage', '393(1) Sl. No. 1(ii)', 200, 2000, 200, 2000, 20000 * L, 0],
+  ['Fees for Professional Services', '393(1) Sl. No. 6(iii)', 1000, 2000, 1000, 2000, 50000 * L, 0],
+  ['Fees for Technical Services', '393(1) Sl. No. 6(iii)', 200, 2000, 200, 2000, 50000 * L, 0],
+  ['Payments to Contractors', '393(1) Sl. No. 6(i)', 100, 2000, 200, 2000, 100000 * L, 30000 * L],
+  ['Rent of Land, Building Or Furniture', '393(1) Sl. No. 2(ii)', 1000, 2000, 1000, 2000, 600000 * L, 0],
+  ['Rent of Plant & Machinery', '393(1) Sl. No. 2(ii)', 200, 2000, 200, 2000, 600000 * L, 0],
+  ['Income in the Form of Interest From Indian Company', '393(1) Sl. No. 5(iii)', 1000, 2000, 1000, 2000, 10000 * L, 0],
+  ['Purchase of Goods', '393(1) Sl. No. 8(ii)', 10, 500, 10, 500, 5000000 * L, 0],
+  ['Sale of Scrap', '394(1) Sl. No. 4', 200, 500, 200, 500, 0, 0],
+  ['Sale of Timber Obtained Under a Forest Lease', '394(1) Sl. No. 3', 200, 500, 200, 500, 0, 0],
+  ['Sale of Motor Vehicle Exceeding Ten Lakh Rupees', '394(1) Sl. No. 6', 100, 500, 100, 500, 1000000 * L, 0],
+];
+
+export interface NatureVersion {
+  id: number;
+  nature_id: number;
+  effective_from: string;
+  act: string;
+  section: string;
+  payment_code: string;
+  rate_ind_pan_bp: number;
+  rate_ind_nopan_bp: number;
+  rate_oth_pan_bp: number;
+  rate_oth_nopan_bp: number;
+  threshold: number;
+  single_threshold: number;
+}
+
+export interface DatedNature extends Nature {
+  act: string;
+  effective_from: string;
+  section_1961: string;
+}
+
 async function nextId(db: Db, table: string): Promise<number> {
   return ((await one<{ m: number }>(db, `SELECT COALESCE(MAX(id), 0) AS m FROM ${table}`))!.m) + 1;
+}
+
+async function seedVersions(db: Db): Promise<void> {
+  if (await one(db, "SELECT 1 FROM tds_meta WHERE key = 'versions_2025'")) return;
+  const rows = await db.select<{ id: number; name: string }>('SELECT id, name FROM tds_nature');
+  const byName = new Map(rows.map((r) => [r.name.toLowerCase(), r.id]));
+  let id = await nextId(db, 'tds_nature_versions');
+  const stmts: Stmt[] = [];
+  for (const [name, section, ...nums] of SEED_2025) {
+    const nid = byName.get(name.toLowerCase());
+    if (!nid) continue;
+    stmts.push({
+      sql: `INSERT OR IGNORE INTO tds_nature_versions (id, nature_id, effective_from, act, section, rate_ind_pan_bp, rate_ind_nopan_bp, rate_oth_pan_bp, rate_oth_nopan_bp, threshold, single_threshold)
+            VALUES (?, ?, ?, '2025', ?, ?, ?, ?, ?, ?, ?)`,
+      params: [id++, nid, IT_ACT_2025_FROM, section, ...nums],
+    });
+  }
+  stmts.push({ sql: "INSERT OR REPLACE INTO tds_meta (key, value) VALUES ('versions_2025', '1')" });
+  await db.batch(stmts);
 }
 
 export async function ensureStatutory(db: Db): Promise<void> {
   await db.batch(STATUTORY_SCHEMA.map((sql) => ({ sql })));
   await db.batch([{ sql: 'INSERT OR IGNORE INTO tds_company (id) VALUES (1)' }]);
   const n = (await one<{ c: number }>(db, 'SELECT COUNT(*) AS c FROM tds_nature'))!.c;
-  if (n) return;
-  await db.batch(
-    SEED.map((s, i) => ({
-      sql: `INSERT INTO tds_nature (id, name, kind, section, payment_code, rate_ind_pan_bp, rate_ind_nopan_bp, rate_oth_pan_bp, rate_oth_nopan_bp, threshold, single_threshold)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      params: [i + 1, ...s],
-    }))
-  );
+  if (!n)
+    await db.batch(
+      SEED.map((s, i) => ({
+        sql: `INSERT INTO tds_nature (id, name, kind, section, payment_code, rate_ind_pan_bp, rate_ind_nopan_bp, rate_oth_pan_bp, rate_oth_nopan_bp, threshold, single_threshold)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        params: [i + 1, ...s],
+      }))
+    );
+  await seedVersions(db);
+}
+
+export async function natureVersions(db: Db, natureId?: number): Promise<NatureVersion[]> {
+  return natureId
+    ? db.select<NatureVersion>('SELECT * FROM tds_nature_versions WHERE nature_id = ? ORDER BY effective_from', [natureId])
+    : db.select<NatureVersion>('SELECT * FROM tds_nature_versions ORDER BY nature_id, effective_from');
+}
+
+async function versionMap(db: Db): Promise<Map<number, NatureVersion[]>> {
+  const map = new Map<number, NatureVersion[]>();
+  for (const v of await natureVersions(db)) map.set(v.nature_id, [...(map.get(v.nature_id) ?? []), v]);
+  return map;
+}
+
+export function applyVersion(n: Nature, versions: NatureVersion[], date: string): DatedNature {
+  const v = [...versions].filter((x) => x.nature_id === n.id && x.effective_from <= date).sort((a, b) => a.effective_from.localeCompare(b.effective_from)).pop();
+  if (!v) return { ...n, act: '1961', effective_from: '', section_1961: n.section };
+  return {
+    ...n,
+    section: v.section || n.section,
+    payment_code: v.payment_code,
+    rate_ind_pan_bp: v.rate_ind_pan_bp,
+    rate_ind_nopan_bp: v.rate_ind_nopan_bp,
+    rate_oth_pan_bp: v.rate_oth_pan_bp,
+    rate_oth_nopan_bp: v.rate_oth_nopan_bp,
+    threshold: v.threshold,
+    single_threshold: v.single_threshold,
+    act: v.act,
+    effective_from: v.effective_from,
+    section_1961: n.section,
+  };
+}
+
+export async function natureOn(db: Db, id: number, date: string): Promise<DatedNature | null> {
+  const n = await nature(db, id);
+  return n ? applyVersion(n, await natureVersions(db, id), date) : null;
+}
+
+export async function naturesOn(db: Db, date: string, kind?: TaxKind): Promise<DatedNature[]> {
+  const vm = await versionMap(db);
+  return (await natures(db, kind)).map((n) => applyVersion(n, vm.get(n.id) ?? [], date));
+}
+
+const VERSION_INTS = ['rate_ind_pan_bp', 'rate_ind_nopan_bp', 'rate_oth_pan_bp', 'rate_oth_nopan_bp', 'threshold', 'single_threshold'] as const;
+
+export async function saveNatureVersion(db: Db, natureId: number, input: Partial<NatureVersion> & { effective_from: string }): Promise<NatureVersion> {
+  if (!(await nature(db, natureId))) throw new CoreError('not_found', 'Nature of payment not found');
+  if (!isIsoDate(input.effective_from)) throw new CoreError('invalid', 'Applicable from date is invalid');
+  const ints = VERSION_INTS.map((f) => {
+    const v = Math.trunc(Number(input[f]) || 0);
+    if (v < 0) throw new CoreError('invalid', 'Values cannot be negative');
+    return v;
+  });
+  const act = clean(input.act ?? actOn(input.effective_from), 10) || actOn(input.effective_from);
+  const cur = await one<{ id: number }>(db, 'SELECT id FROM tds_nature_versions WHERE nature_id = ? AND effective_from = ?', [natureId, input.effective_from]);
+  const id = cur?.id ?? (await nextId(db, 'tds_nature_versions'));
+  await db.batch([
+    {
+      sql: `INSERT OR REPLACE INTO tds_nature_versions (id, nature_id, effective_from, act, section, payment_code, ${VERSION_INTS.join(', ')}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [id, natureId, input.effective_from, act, clean(input.section, 40), clean(input.payment_code, 20), ...ints],
+    },
+  ]);
+  return (await one<NatureVersion>(db, 'SELECT * FROM tds_nature_versions WHERE id = ?', [id]))!;
+}
+
+export async function deleteNatureVersion(db: Db, id: number): Promise<void> {
+  await db.batch([{ sql: 'DELETE FROM tds_nature_versions WHERE id = ?', params: [id] }]);
+}
+
+export function sectionOn(n: Pick<Nature, 'id' | 'section'>, versions: NatureVersion[] | undefined, date: string): string {
+  const v = (versions ?? []).filter((x) => x.effective_from <= date).sort((a, b) => a.effective_from.localeCompare(b.effective_from)).pop();
+  return v?.section || n.section;
 }
 
 export async function tdsCompany(db: Db): Promise<TdsCompany> {
@@ -283,6 +435,7 @@ export async function deleteNature(db: Db, id: number): Promise<void> {
   await db.batch([
     { sql: 'UPDATE tds_duty_ledger SET nature_id = NULL WHERE nature_id = ?', params: [id] },
     { sql: 'UPDATE tds_party SET nature_id = NULL WHERE nature_id = ?', params: [id] },
+    { sql: 'DELETE FROM tds_nature_versions WHERE nature_id = ?', params: [id] },
     { sql: 'DELETE FROM tds_nature WHERE id = ?', params: [id] },
   ]);
 }
@@ -365,6 +518,8 @@ export interface TdsPlan {
   deductee_type: string;
   resident: string;
   pan: string;
+  section: string;
+  act: string;
 }
 
 export function fyStartOf(date: string): string {
@@ -386,7 +541,7 @@ export interface PlanInput {
 export async function planTds(db: Db, input: PlanInput): Promise<TdsPlan> {
   if (!Number.isInteger(input.amount) || input.amount <= 0) throw new CoreError('invalid', 'Amount must be positive');
   if (!isIsoDate(input.date)) throw new CoreError('invalid', 'Date is invalid');
-  const n = await nature(db, input.nature_id);
+  const n = await natureOn(db, input.nature_id, input.date);
   if (!n) throw new CoreError('not_found', 'Nature of payment not found');
   const party = await one<{ pan: string }>(db, 'SELECT pan FROM ledgers WHERE id = ?', [input.party_id]);
   if (!party) throw new CoreError('not_found', 'Party ledger not found');
@@ -410,6 +565,7 @@ export async function planTds(db: Db, input: PlanInput): Promise<TdsPlan> {
   const finish = (b: number, tax: number, sur: number, cess: number, bel: boolean): TdsPlan => ({
     nature_id: n.id, kind: n.kind, gross: input.amount, base: b, rate_bp: rate, tax, surcharge: sur, cess,
     total: tax + sur + cess, below_threshold: bel, duty_ledger_id: dutyLedger, deductee_type: p.deductee_type, resident: p.resident, pan,
+    section: n.section, act: n.act,
   });
   if (n.single_threshold) below = input.amount <= n.single_threshold && total <= n.threshold;
   else if (n.threshold) below = total <= n.threshold;
@@ -483,10 +639,11 @@ export async function tdsOutstandings(db: Db, from: string, to: string, kind: Ta
     [kind, from, to]
   );
   const today = asOn ?? to;
+  const vm = await versionMap(db);
   return rows
     .map((r) => {
       const due = dueDate(r.date);
-      return { ...r, pending: r.amount - r.paid, due_on: due, overdue_days: Math.max(0, daysBetween(due, today)) };
+      return { ...r, section: sectionOn({ id: r.nature_id, section: r.section }, vm.get(r.nature_id), r.date), pending: r.amount - r.paid, due_on: due, overdue_days: Math.max(0, daysBetween(due, today)) };
     })
     .filter((r) => r.pending > 0);
 }
@@ -569,6 +726,8 @@ export async function payTds(books: Books, input: TdsPaymentInput): Promise<{ vo
     input.deduction_ids
   );
   if (ds.length !== input.deduction_ids.length) throw new CoreError('not_found', 'Deduction not found');
+  const vm = await versionMap(db);
+  for (const d of ds) d.section = sectionOn({ id: d.nature_id, section: d.section }, vm.get(d.nature_id), d.date);
   const groups = new Map<string, typeof ds>();
   for (const d of ds) {
     if (d.total - d.paid <= 0) throw new CoreError('conflict', 'Deduction is already paid');
@@ -664,9 +823,12 @@ export interface Form26QDeduction {
   deposited: number;
   challan_no: string;
   bsr_code: string;
+  act: string;
 }
 
 export interface Form26Q {
+  form: string;
+  act: string;
   quarter: number;
   from: string;
   to: string;
@@ -679,7 +841,7 @@ export interface Form26Q {
 export async function form26Q(db: Db, from: string, to: string, kind: TaxKind = 'TDS'): Promise<Form26Q> {
   const co = await tdsCompany(db);
   const deductions = await db.select<Form26QDeduction>(
-    `SELECT d.date, p.name AS party, d.pan, n.section, d.deductee_type, d.gross, d.base, d.rate_bp, d.tax, d.surcharge, d.cess, d.total,
+    `SELECT d.nature_id, d.date, p.name AS party, d.pan, n.section, d.deductee_type, d.gross, d.base, d.rate_bp, d.tax, d.surcharge, d.cess, d.total,
             COALESCE((SELECT SUM(cl.amount) FROM tds_challan_lines cl WHERE cl.deduction_id = d.id), 0) AS deposited,
             COALESCE((SELECT GROUP_CONCAT(c.challan_no) FROM tds_challan_lines cl JOIN tds_challans c ON c.id = cl.challan_id WHERE cl.deduction_id = d.id), '') AS challan_no,
             COALESCE((SELECT GROUP_CONCAT(c.bsr_code) FROM tds_challan_lines cl JOIN tds_challans c ON c.id = cl.challan_id WHERE cl.deduction_id = d.id), '') AS bsr_code
@@ -688,11 +850,21 @@ export async function form26Q(db: Db, from: string, to: string, kind: TaxKind = 
      JOIN ledgers p ON p.id = d.party_id
      JOIN tds_nature n ON n.id = d.nature_id
      WHERE d.kind = ? AND d.date >= ? AND d.date <= ? AND d.tax > 0
-     ORDER BY n.section, d.date, d.id`,
+     ORDER BY d.date, d.id`,
     [kind, from, to]
   );
+  const vm = await versionMap(db);
+  for (const d of deductions as (Form26QDeduction & { nature_id?: number })[]) {
+    d.section = sectionOn({ id: d.nature_id!, section: d.section }, vm.get(d.nature_id!), d.date);
+    d.act = actOn(d.date);
+    delete d.nature_id;
+  }
+  deductions.sort((a, b) => a.section.localeCompare(b.section) || a.date.localeCompare(b.date));
   const challans = await tdsChallans(db, from, to);
+  const act = actOn(from);
   return {
+    form: kind === 'TCS' ? (act === '2025' ? '143' : '27EQ') : act === '2025' ? '140' : '26Q',
+    act,
     quarter: quarterOf(from).q,
     from,
     to,

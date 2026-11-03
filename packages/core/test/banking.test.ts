@@ -221,3 +221,24 @@ test('post-dated cheques', async () => {
   const bal = await reconSummary(s.db, s.bank, '2026-12-31');
   assert.equal(bal.books_balance, 100_000_00 - 100_00);
 });
+
+test('post-dated vouchers stay out of balances until their date', async () => {
+  const { groupSummary, ledgerVouchers } = await import('../src/reports.ts');
+  const s = await setup();
+  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const today = iso(new Date());
+  const later = iso(new Date(Date.now() + 40 * 86400000));
+  const end = iso(new Date(Date.now() + 400 * 86400000));
+  await s.pay(today, 1_000_00);
+  const pdc = await s.pay(later, 7_000_00);
+  await saveBankAlloc(s.db, { voucher_id: pdc, ledger_id: s.bank, inst_no: '900001', inst_date: later, post_dated: true });
+  const lv = await ledgerVouchers(s.db, s.rent, '2026-04-01', end);
+  assert.equal(lv.lines.length, 1);
+  assert.equal(lv.closing, 1_000_00);
+  const bank = await ledgerVouchers(s.db, s.bank, '2026-04-01', end);
+  assert.equal(bank.closing, 100_000_00 - 1_000_00);
+  const gs = await groupSummary(s.db, '2026-04-01', end, null);
+  assert.ok(JSON.stringify(gs).length > 0);
+  await saveBankAlloc(s.db, { voucher_id: pdc, ledger_id: s.bank, inst_no: '900001', inst_date: later, post_dated: false });
+  assert.equal((await ledgerVouchers(s.db, s.rent, '2026-04-01', end)).closing, 8_000_00);
+});

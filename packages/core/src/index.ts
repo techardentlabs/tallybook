@@ -17,6 +17,7 @@ export * from './banking.ts';
 export * from './security.ts';
 export * from './currency.ts';
 export * from './vclass.ts';
+export * from './mfg.ts';
 export * from './stockx.ts';
 export * from './excel.ts';
 export * from './tally-xml2.ts';

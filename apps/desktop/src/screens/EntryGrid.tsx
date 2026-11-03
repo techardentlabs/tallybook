@@ -127,7 +127,7 @@ export function EntryGrid({
 
   const optionsOf = (c: GridCol, r: GridRow): Opt[] => (typeof c.options === 'function' ? c.options(r) : c.options ?? []);
   const alignCls = (c: GridCol) => (c.align === 'right' ? 'text-right' : c.align === 'center' ? 'text-center' : 'text-left');
-  const wrap = placement === 'right' ? 'fixed inset-0 z-50 bg-tb-top/35' : 'fixed inset-0 z-50 flex items-center justify-center bg-tb-top/35';
+  const wrap = placement === 'right' ? 'fixed inset-0 z-50 bg-tb-top/35' : 'fixed inset-0 z-50 flex items-center justify-center bg-tb-top/35 pr-[400px]';
   const panel = placement === 'right' ? 'fixed bottom-6 right-0 top-[88px] flex flex-col overflow-hidden' : '';
 
   return (

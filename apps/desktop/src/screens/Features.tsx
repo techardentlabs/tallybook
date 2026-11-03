@@ -15,7 +15,7 @@ export function FeaturesScreen() {
     const v = form.current?.submit();
     if (!v) return;
     try {
-      await books.updateCompany({ gst_enabled: v.gst ? 1 : 0, bill_wise: v.bill ? 1 : 0, inventory_enabled: v.inv ? 1 : 0, payroll_enabled: v.pay ? 1 : 0, cost_centres_enabled: v.cc ? 1 : 0, gstin: v.gst ? v.gstin : '' });
+      await books.updateCompany({ gst_enabled: v.gst ? 1 : 0, bill_wise: v.bill ? 1 : 0, inventory_enabled: v.inv ? 1 : 0, payroll_enabled: v.pay ? 1 : 0, cost_centres_enabled: v.cc ? 1 : 0, price_levels_enabled: v.inv && v.pl ? 1 : 0, batches_enabled: v.inv && v.bat ? 1 : 0, gstin: v.gst ? v.gstin : '' });
       await saveTdsCompany(books.db, { tds_enabled: v.tds ? 1 : 0, tcs_enabled: v.tcs ? 1 : 0, einvoice_enabled: v.einv ? 1 : 0, ewb_enabled: v.ewb ? 1 : 0 });
       await reloadCompany();
       bump();
@@ -30,6 +30,8 @@ export function FeaturesScreen() {
   const fields: FieldDef[] = [
     { key: 'bill', label: 'Maintain bill-wise details', kind: 'toggle', initial: !!company.bill_wise, heading: 'Accounting features' },
     { key: 'inv', label: 'Maintain inventory', kind: 'toggle', initial: !!company.inventory_enabled },
+    { key: 'bat', label: 'Maintain batches', kind: 'toggle', initial: !!company.batches_enabled, visible: (v) => !!v.inv },
+    { key: 'pl', label: 'Enable multiple price levels', kind: 'toggle', initial: !!company.price_levels_enabled, visible: (v) => !!v.inv },
     { key: 'cc', label: 'Enable cost centres', kind: 'toggle', initial: !!company.cost_centres_enabled },
     { key: 'pay', label: 'Maintain payroll', kind: 'toggle', initial: !!company.payroll_enabled },
     { key: 'gst', label: 'Enable Goods and Services Tax (GST)', kind: 'toggle', initial: !!company.gst_enabled, heading: 'Statutory & Taxation' },

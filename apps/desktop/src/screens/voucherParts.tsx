@@ -9,14 +9,19 @@ import {
   stateCodeOfGstin,
   stateName,
   taxLedgerName,
+  type BatchAllocInput,
+  type EntryForexInput,
   type BillInput,
   type EntryInput,
   type StockLineInput,
   type Group,
   type Ledger,
   type VoucherType,
+  type VoucherClass,
+  expandClass,
 } from '@tallybook/core';
 import { PickerInput, type Opt } from '../ui/PickerInput.tsx';
+import { ForexEntryDialog, forexSummary, useCurrencies } from './Currency.tsx';
 import { useStore } from '../store.tsx';
 import { BANK_CASH, GST_RATES_BP, INPUT_SUPPLY, OUTPUT_SUPPLY, PARTY_ROOTS, isUnder, rateLabel } from '../lib.ts';
 
@@ -27,6 +32,8 @@ export interface BuiltVoucher {
   reverse_charge?: boolean;
   stock?: StockLineInput[];
   track?: { index: number; against: number; qty: number }[];
+  batches?: { index: number; allocs: BatchAllocInput[] }[];
+  forex?: { index: number; forex: EntryForexInput }[];
 }
 
 export interface BodyHandle {
@@ -46,15 +53,16 @@ export interface BodyProps {
   onFinish: () => void;
   onDirty: () => void;
   initial?: InitialData;
+  vclass?: VoucherClass | null;
 }
 
 export interface InitialData {
-  rows?: { side: 'Dr' | 'Cr'; ledgerId: number; amount: number; bills: BillInput[] }[];
+  rows?: { side: 'Dr' | 'Cr'; ledgerId: number; amount: number; bills: BillInput[]; forex?: EntryForexInput }[];
   party_id?: number | null;
   place_of_supply?: string;
   reverse_charge?: boolean;
   lines?: { ledgerId: number; taxable: number; rate_bp: number }[];
-  items?: { item_id: number; godown_id: number | null; ledgerId: number | null; qty: number; rate: number; tracked?: number }[];
+  items?: { item_id: number; godown_id: number | null; ledgerId: number | null; qty: number; rate: number; tracked?: number; batches?: BatchAllocInput[] }[];
 }
 
 interface Row {
@@ -63,6 +71,7 @@ interface Row {
   text: string;
   amount: string;
   bills: BillInput[];
+  forex?: EntryForexInput;
 }
 
 const FIRST_SIDE: Record<string, 'Dr' | 'Cr'> = { Payment: 'Cr', Receipt: 'Dr', Contra: 'Cr', Journal: 'Dr', Sales: 'Dr', Purchase: 'Cr', 'Credit Note': 'Cr', 'Debit Note': 'Dr' };
@@ -83,7 +92,7 @@ export const AccountingBody = forwardRef<BodyHandle, BodyProps>(function Account
     if (initial?.rows?.length) {
       return initial.rows.map((r) => {
         const l = ledgers.find((x) => x.id === r.ledgerId)!;
-        return { side: r.side, opt: { id: l.id, label: l.name, sub: l.group_name }, text: l.name, amount: fmtAmount(Math.abs(r.amount)), bills: r.bills };
+        return { side: r.side, opt: { id: l.id, label: l.name, sub: l.group_name }, text: l.name, amount: fmtAmount(Math.abs(r.amount)), bills: r.bills, forex: r.forex };
       });
     }
     return emptyRows(type.parent);
@@ -93,6 +102,31 @@ export const AccountingBody = forwardRef<BodyHandle, BodyProps>(function Account
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
   const [balances, setBalances] = useState<Record<number, number>>({});
+  const classDone = useRef(false);
+  const [forexReq, setForexReq] = useState<{ i: number; side: 'Dr' | 'Cr'; currencyId: number; initial?: EntryForexInput } | null>(null);
+  const forexList = useCurrencies();
+
+  const applyClass = (i: number, row: Row, amount: number): boolean => {
+    const cls = props.vclass;
+    if (!cls || classDone.current || i !== (isSingle ? 1 : 0)) return false;
+    classDone.current = true;
+    const base = row.side === 'Dr' ? amount : -amount;
+    const extra = expandClass(cls, base, ['default', 'additional']).filter((x) => x.ledger_id !== Number(row.opt?.id) && (!isSingle || (x.amount >= 0 ? 'Dr' : 'Cr') === row.side));
+    if (!extra.length) return false;
+    const add: Row[] = extra.map((x) => {
+      const l = ledgers.find((y) => y.id === x.ledger_id);
+      return { side: x.amount >= 0 ? 'Dr' : 'Cr', opt: l ? { id: l.id, label: l.name, sub: l.group_name } : null, text: l?.name ?? x.ledger, amount: x.amount ? fmtAmount(Math.abs(x.amount)) : '', bills: [] };
+    });
+    const cur = rowsRef.current.map((r, j) => (j === i ? { ...r, amount: fmtAmount(amount), bills: row.bills } : r));
+    const next = [...cur.slice(0, i + 1), ...add, ...cur.slice(i + 1).filter((r) => r.opt)];
+    const diff = next.reduce((t, r, j) => (isSingle && j === 0 ? t : t + (r.opt ? (r.side === 'Dr' ? 1 : -1) * (parseAmount(r.amount) ?? 0) : 0)), 0);
+    next.push({ side: isSingle ? row.side : diff > 0 ? 'Cr' : 'Dr', opt: null, text: '', amount: isSingle || !diff ? '' : fmtAmount(Math.abs(diff)), bills: [] });
+    touch();
+    setRows(next);
+    const open = add.findIndex((r) => !r.amount);
+    focus(open >= 0 ? i + 1 + open : next.length - 1, open >= 0 ? 2 : 1);
+    return true;
+  };
 
   const touch = () => {
     if (!dirty.current) {
@@ -177,15 +211,20 @@ export const AccountingBody = forwardRef<BodyHandle, BodyProps>(function Account
           const a = parseAmount(r.amount) ?? 0;
           return { ledger_id: Number(r.opt!.id), amount: r.side === 'Dr' ? a : -a, bills: r.bills.length ? r.bills : undefined };
         });
+        const forex = rs.flatMap((r, index) => {
+          const l = ledgers.find((x) => x.id === Number(r.opt!.id));
+          return r.forex && l?.currency_id ? [{ index, forex: r.forex }] : [];
+        });
         const sum = entries.reduce((s, e) => s + e.amount, 0);
         if (sum !== 0) {
           toast(`Debit and credit totals differ by ${fmtAmount(Math.abs(sum))}`, 'err');
           return null;
         }
-        return { entries };
+        return { entries, forex };
       },
       reset() {
         dirty.current = false;
+        classDone.current = false;
         setRows(emptyRows(type.parent));
         focus(0, 1);
       },
@@ -271,21 +310,32 @@ export const AccountingBody = forwardRef<BodyHandle, BodyProps>(function Account
         } else if (e.key === 'Enter') {
           e.preventDefault();
           e.stopPropagation();
+          if (!ledger) return toast('Select a ledger first', 'err');
+          if (ledger.currency_id && !forexReq) {
+            setForexReq({ i, side: r.side, currencyId: ledger.currency_id, initial: r.forex });
+            return;
+          }
           const a = parseAmount(r.amount);
           if (!a) return toast('Enter an amount', 'err');
-          if (!ledger) return toast('Select a ledger first', 'err');
-          update(i, { amount: fmtAmount(a) });
-          if (ledger.bill_by_bill && company?.bill_wise) {
-            const bills = await askBills(ledger, r.side === 'Dr' ? a : -a);
-            if (!bills) return focus(i, 2);
-            update(i, { bills });
-          }
-          if (i === rowsRef.current.length - 1) addRow(i);
-          else focus(i + 1, 1);
+          await afterAmount(i, r, a, ledger);
         }
       }}
     />
   );
+
+  const afterAmount = async (i: number, r: Row, a: number, ledger: Ledger) => {
+          update(i, { amount: fmtAmount(a) });
+          let bills = r.bills;
+          if (ledger.bill_by_bill && company?.bill_wise) {
+            const got = await askBills(ledger, r.side === 'Dr' ? a : -a);
+            if (!got) return focus(i, 2);
+            bills = got;
+            update(i, { bills });
+          }
+          if (applyClass(i, { ...r, bills }, a)) return;
+          if (i === rowsRef.current.length - 1) addRow(i);
+          else focus(i + 1, 1);
+  };
 
   return (
     <div ref={box} className="flex min-h-[420px] flex-col">
@@ -330,6 +380,14 @@ export const AccountingBody = forwardRef<BodyHandle, BodyProps>(function Account
                 {single || r.side === 'Dr' ? <div>{amountInput(r, i, ledger)}</div> : <div />}
                 {!single && (r.side === 'Cr' ? <div>{amountInput(r, i, ledger)}</div> : <div />)}
               </div>
+              {r.forex && ledger?.currency_id ? (
+                <div className="pl-14 text-[13px] italic">
+                  Forex: {(() => {
+                    const c = forexList.find((x) => x.id === r.forex!.currency_id);
+                    return c ? forexSummary(company?.currency_symbol ?? '₹', c, r.forex!.foreign_amount, r.forex!.rate_e4, parseAmount(r.amount) ?? 0) : '';
+                  })()}
+                </div>
+              ) : null}
               {bal(r) && (
                 <div className="pl-14 text-[13px] italic text-[#7a7a7a]">
                   Cur Bal: <b>{bal(r)}</b>
@@ -350,6 +408,28 @@ export const AccountingBody = forwardRef<BodyHandle, BodyProps>(function Account
           </>
         )}
       </div>
+      {forexReq && (
+        <ForexEntryDialog
+          date={props.date}
+          side={forexReq.side}
+          currencyId={forexReq.currencyId}
+          initial={forexReq.initial}
+          onCancel={() => {
+            const i = forexReq.i;
+            setForexReq(null);
+            focus(i, 2);
+          }}
+          onAccept={(fx) => {
+            const { i } = forexReq;
+            const row = rowsRef.current[i];
+            const ledger = ledgers.find((l) => l.id === Number(row?.opt?.id));
+            const forex: EntryForexInput = { currency_id: fx.currency_id, foreign_amount: fx.foreign_amount, rate_e4: fx.rate_e4, rate_kind: fx.rate_kind };
+            setForexReq(null);
+            update(i, { forex, amount: fmtAmount(Math.abs(fx.base_amount)) });
+            if (row && ledger) void afterAmount(i, { ...row, forex }, Math.abs(fx.base_amount), ledger);
+          }}
+        />
+      )}
       {!single && totals.diff !== 0 && <div className="text-right text-xs text-tb-danger">Difference: {fmtAmount(Math.abs(totals.diff), false)} {totals.diff > 0 ? 'Dr' : 'Cr'}</div>}
     </div>
   );

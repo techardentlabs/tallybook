@@ -9,13 +9,15 @@ export const LEDGER_EXTRA_TEXT = [
 
 export const LEDGER_INT_FIELDS = [
   'inventory_affected', 'check_credit_days', 'credit_limit', 'cost_centres', 'interest_active', 'tds_deductible', 'tcs_applicable',
-  'is_ecommerce', 'rounding_limit', 'auto_reconcile',
+  'is_ecommerce', 'rounding_limit', 'auto_reconcile', 'currency_id',
 ] as const;
 
 export const STOCK_ITEM_TEXT = ['part_no', 'costing_method', 'market_method', 'description', 'notes'] as const;
 export const STOCK_ITEM_INT = ['maintain_batches', 'track_expiry', 'min_order_qty', 'alt_unit_id', 'alt_conversion', 'enable_cost_tracking'] as const;
 
 export const MIGRATIONS: { table: string; column: string; ddl: string }[] = [
+  { table: 'company', column: 'price_levels_enabled', ddl: 'ALTER TABLE company ADD COLUMN price_levels_enabled INTEGER NOT NULL DEFAULT 0' },
+  { table: 'company', column: 'batches_enabled', ddl: 'ALTER TABLE company ADD COLUMN batches_enabled INTEGER NOT NULL DEFAULT 0' },
   { table: 'stock_movements', column: 'tracked', ddl: 'ALTER TABLE stock_movements ADD COLUMN tracked INTEGER NOT NULL DEFAULT 0' },
   { table: 'audit_log', column: 'username', ddl: "ALTER TABLE audit_log ADD COLUMN username TEXT NOT NULL DEFAULT ''" },
   { table: 'company', column: 'cost_centres_enabled', ddl: 'ALTER TABLE company ADD COLUMN cost_centres_enabled INTEGER NOT NULL DEFAULT 0' },
