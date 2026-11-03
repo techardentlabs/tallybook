@@ -1,0 +1,77 @@
+# Releasing TallyBook
+
+## Versioning
+
+TallyBook uses [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`, optionally with a pre-release suffix.
+
+| Change | Bump | Example |
+|---|---|---|
+| Data format change that needs a migration users cannot undo, or removal of a feature | MAJOR | 1.4.2 → 2.0.0 |
+| New features, new reports, new masters (backward compatible; schema changes are additive migrations) | MINOR | 1.4.2 → 1.5.0 |
+| Bug fixes, layout fixes, wording | PATCH | 1.4.2 → 1.4.3 |
+| Test builds | pre-release | 1.5.0-beta.1, 1.5.0-rc.1 |
+
+While the version is `0.x`, minor releases may change behaviour; we still never ship a migration that loses data.
+
+The version lives in five files kept in sync by one command:
+
+```sh
+pnpm run version:patch        # or version:minor / version:major
+node scripts/version.mjs 1.5.0-beta.1   # explicit version
+pnpm run version              # print the current version
+```
+
+It updates the three `package.json` files, `tauri.conf.json`, `Cargo.toml`, and adds a dated heading to `CHANGELOG.md` under `[Unreleased]`.
+
+## Update cycle
+
+| Channel | Tag | Cadence | Who gets it |
+|---|---|---|---|
+| Stable | `vX.Y.Z` | Minor release on the first Monday of every month; patch releases as needed (within 48 hours for data or GST issues) | Everyone, through the in-app updater and tallybook.online |
+| Pre-release | `vX.Y.Z-beta.N`, `-rc.N` | Weekly during a cycle | Marked "pre-release" on GitHub; not offered by the updater |
+
+Monthly cycle:
+
+1. Weeks 1–3: features land on `main` behind passing CI. Each change adds a line under `[Unreleased]` in `CHANGELOG.md`.
+2. Week 3: tag `vX.Y.0-rc.1`, install it on all three platforms, run through the release checklist below.
+3. First Monday: bump to `X.Y.0`, tag, publish.
+4. Statutory changes (GST rates, TDS rates, return formats) ship as a patch as soon as they are notified, not at the monthly release.
+
+## How a release is built
+
+1. `pnpm run version:minor` (or patch/major), move the `[Unreleased]` notes under the new heading, commit to `main`.
+2. `git tag vX.Y.Z && git push origin main --tags`.
+3. The source repo (`techardentlabs/tallybook`) is private. The **Release** workflow creates a draft release in the public repo `techardentlabs/tallybook-releases` from the changelog section, builds on macOS (universal), Windows and Linux in parallel, uploads the installers and the signed updater files plus `latest.json`, then publishes the release.
+4. Installed apps check `https://github.com/techardentlabs/tallybook-releases/releases/latest/download/latest.json` four seconds after start-up; users can also press F1 then Alt+U. Updates are verified against the public key in `tauri.conf.json` before they install.
+5. tallybook.online reads the latest release from the GitHub API, so its download buttons update automatically.
+
+Artifacts per release:
+
+| Platform | Installers | Updater payload |
+|---|---|---|
+| macOS (Apple Silicon + Intel) | `.dmg` | `.app.tar.gz` + `.sig` |
+| Windows | `.msi`, `-setup.exe` | same files + `.sig` |
+| Linux | `.AppImage`, `.deb`, `.rpm` | `.AppImage` + `.sig` |
+
+## Secrets
+
+| Secret | Purpose |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | Signs update packages. The key file lives outside the repo (`~/.tauri/tallybook.key`). Back it up: if it is lost, installed apps can no longer be updated. |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Empty for the current key. |
+| `RELEASES_TOKEN` | Fine-grained GitHub token with Contents: read and write on `techardentlabs/tallybook-releases`; used to create the release and upload files there. |
+
+Code signing is not set up yet. To remove the macOS "unidentified developer" and Windows SmartScreen warnings, add an Apple Developer ID certificate (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) and a Windows code-signing certificate, then pass them to `tauri-action`.
+
+## Release checklist
+
+- [ ] `pnpm test` and both typechecks pass (CI is green).
+- [ ] Install the rc on macOS, Windows and Linux; open an existing company created by the previous version and confirm the data migrated.
+- [ ] Create a company, post one voucher of each type, open Balance Sheet, P&L, Trial Balance, GSTR-1.
+- [ ] Import a Tally XML export; re-import it and confirm no duplicates.
+- [ ] Backup, restore into a new company, compare Trial Balance.
+- [ ] Update from the previous release through the in-app updater.
+
+## Website
+
+The tallybook.online site lives in the public `techardentlabs/tallybook-releases` repo (`site/`), deployed to GitHub Pages by its **Website** workflow. The custom domain is `tallybook.online`.

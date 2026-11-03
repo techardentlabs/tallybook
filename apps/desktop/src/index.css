@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+@theme {
+  --color-tb-top: #2a62ad;
+  --color-tb-title: #2a62ad;
+  --color-tb-strip: #8bb9e0;
+  --color-tb-wash: #ffffff;
+  --color-tb-panel: #c3dbf0;
+  --color-tb-menu: #dfeefa;
+  --color-tb-paper: #ffffff;
+  --color-tb-line: #7fa9d4;
+  --color-tb-ink: #000000;
+  --color-tb-muted: #2a62ad;
+  --color-tb-sel: #ffc32b;
+  --color-tb-sel-ink: #000000;
+  --color-tb-btn: #ffffff;
+  --color-tb-danger: #b3261e;
+  --font-tb: Arial, "Segoe UI", Helvetica, sans-serif;
+}
+
+html, body, #root { height: 100%; margin: 0; }
+body { background: var(--color-tb-wash); color: var(--color-tb-ink); font-family: var(--font-tb); font-size: 15px; line-height: 1.3; -webkit-font-smoothing: auto; text-rendering: optimizeLegibility; overflow: hidden; }
+@layer base {
+  input, select, textarea, button { font: inherit; color: inherit; }
+  input { outline: none; }
+}
+::selection { background: var(--color-tb-sel); color: var(--color-tb-sel-ink); }
+.tb-input { background: transparent; border: 0; padding: 0 3px; min-width: 0; height: 20px; }
+.tb-input:focus { background: var(--color-tb-sel); color: #000; }
+.tb-num { text-align: right; font-variant-numeric: tabular-nums; }
+
+@media print {
+  header, aside, footer, .tb-chrome { display: none !important; }
+  html, body, #root { height: auto; overflow: visible; background: #fff; }
+  main { overflow: visible !important; padding: 0 !important; }
+  tr { break-inside: avoid; }
+  .bg-tb-sel { background: transparent !important; }
+}
+
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+.tb-spaced { letter-spacing: 0.22em; font-weight: 700; font-size: 13px; }
+
+.tb-decorated .tb-sub { display: none; }
+.tb-co-row th { border: 0; font-weight: 400; font-size: 14px; padding: 2px 8px; text-align: center; background: #fff; }
+.tb-co-row th.tb-co { border-top: 1px solid #222; border-left: 1px solid #222; }
+.tb-co-name { font-weight: 700; }
+.tb-grand > td, .tb-grand > th { border-top: 1px solid #222 !important; border-bottom: 3px double #222 !important; border-left: 0 !important; border-right: 0 !important; position: sticky; bottom: 0; background: #fff; }
+.tb-fill > td { height: 100%; padding: 0; border: 0; }

@@ -1,0 +1,24 @@
+{
+  "name": "tallybook",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "pnpm --filter @tallybook/core test",
+    "dev": "pnpm --filter @tallybook/desktop dev",
+    "desktop": "pnpm --filter @tallybook/desktop tauri dev",
+    "version": "node scripts/version.mjs",
+    "version:patch": "node scripts/version.mjs patch",
+    "version:minor": "node scripts/version.mjs minor",
+    "version:major": "node scripts/version.mjs major",
+    "release:build": "pnpm --filter @tallybook/desktop tauri build"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "packageManager": "pnpm@11.7.0",
+  "homepage": "https://tallybook.online",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/techardentlabs/tallybook"
+  }
+}
