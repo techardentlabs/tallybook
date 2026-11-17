@@ -237,7 +237,7 @@ export const Form = forwardRef<FormHandle, Props>(function Form({ fields, onDone
                       stateRef.current = { texts: { ...stateRef.current.texts, [f.key]: o.label }, picked: { ...stateRef.current.picked, [f.key]: o } };
                       advance(f.key);
                     }) : undefined}
-                    onEmptyEnter={f.required ? undefined : () => advance(f.key)}
+                    onEmptyEnter={f.required || (f.options?.length ?? 0) > 0 ? undefined : () => advance(f.key)}
                     onNoMatch={() => toast(`${f.label}: no match`, 'err')}
                     onBackspaceEmpty={() => move(f.key, -1)}
                   />

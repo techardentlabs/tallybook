@@ -156,7 +156,7 @@ const EmployeeBlocks = forwardRef<
                       focus(`i${bi}-0`);
                     });
                   }}
-                  onEmptyEnter={() => (ref.current.some((x) => x.emp) ? p.onFinish() : toast('Select an employee', 'err'))}
+                  onEmptyEnter={() => (ref.current.some((x) => x.emp) ? p.onFinish() : false)}
                   onNoMatch={() => toast('Select an employee from the list', 'err')}
                   onBackspaceEmpty={() => {
                     if (bi > 0) {

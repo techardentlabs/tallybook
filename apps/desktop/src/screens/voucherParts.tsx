@@ -298,7 +298,7 @@ export const AccountingBody = forwardRef<BodyHandle, BodyProps>(function Account
         loadBalance(Number(o.id));
         focus(single && i === 0 ? 1 : i, single && i === 0 ? 1 : 2);
       }}
-      onEmptyEnter={() => (i >= 1 ? finish() : toast('Select a ledger', 'err'))}
+      onEmptyEnter={() => (i >= 1 ? finish() : false)}
       onNoMatch={() => toast('Select a ledger from the list (Alt+C to create)', 'err')}
       onBackspaceEmpty={() => (single ? (i > 0 ? focus(i - 1, i === 1 ? 1 : 2) : undefined) : focus(i, 0))}
       onCreate={(text) => window.dispatchEvent(new CustomEvent('tb:create-ledger', { detail: { text, rowIndex: i } }))}
@@ -715,7 +715,7 @@ export const InvoiceBody = forwardRef<BodyHandle, BodyProps>(function InvoiceBod
                     updateLine(i, { opt: o, text: o.label, rate_bp: l.rate_bp, rateText: rateLabel(l.rate_bp) });
                     focus(`l${i}-1`);
                   }}
-                  onEmptyEnter={() => (i >= 1 ? finish() : toast('Select a ledger', 'err'))}
+                  onEmptyEnter={() => (i >= 1 ? finish() : false)}
                   onNoMatch={() => toast('Select a ledger from the list', 'err')}
                   onBackspaceEmpty={() => (i === 0 ? focus(!output ? 'rcm' : 'pos') : focus(`l${i - 1}-2`))}
                   onCreate={(text) => window.dispatchEvent(new CustomEvent('tb:create-ledger', { detail: { text, rowIndex: -2 - i } }))}

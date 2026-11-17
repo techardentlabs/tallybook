@@ -423,7 +423,7 @@ export const StockBody = forwardRef<BodyHandle, BodyProps>(function StockBody(pr
                   update(i, { item: it, text: it.name, rate: l.rate || (it.standard_price || it.opening_rate ? fmtAmount(it.standard_price || it.opening_rate, false) : '') });
                   focus(multiHouse ? `i${i}-g` : `i${i}-1`);
                 }}
-                onEmptyEnter={() => (i >= 1 ? finish() : toast('Select an item', 'err'))}
+                onEmptyEnter={() => (i >= 1 ? finish() : false)}
                 onNoMatch={() => toast('Select an item from the list', 'err')}
                 onBackspaceEmpty={() => (i === 0 ? (withParty ? focus('party') : undefined) : focus(`i${i - 1}-2`))}
               />

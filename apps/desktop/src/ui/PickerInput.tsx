@@ -16,7 +16,7 @@ interface Props {
   onPick: (o: Opt) => void;
   onCreate?: (text: string) => void;
   onNoMatch?: (text: string) => void;
-  onEmptyEnter?: () => void;
+  onEmptyEnter?: () => boolean | void;
   inputRef?: Ref<HTMLInputElement>;
   className?: string;
   placeholder?: string;
@@ -79,9 +79,11 @@ export function PickerInput(p: Props) {
     } else if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey) {
       stop();
       if (p.value.trim() === '' && p.onEmptyEnter) {
-        setOpen(false);
-        p.onEmptyEnter();
-        return;
+        // Returning false means "not a terminator here": fall through and pick the highlighted item.
+        if (p.onEmptyEnter() !== false) {
+          setOpen(false);
+          return;
+        }
       }
       const o = items[sel];
       if (o) {

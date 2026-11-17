@@ -51,7 +51,9 @@ export function ListPanel({
                 e.preventDefault();
                 onPick(i);
               }}
-              onMouseEnter={() => onHover?.(i)}
+              onMouseMove={() => {
+                if (i !== sel) onHover?.(i);
+              }}
               className={`flex cursor-pointer justify-between gap-3 px-2 py-px text-[15px] ${i === sel ? 'bg-tb-sel' : ''}`}
             >
               <span>{it.label}</span>

@@ -605,7 +605,7 @@ export const ItemInvoiceBody = forwardRef<BodyHandle, BodyProps>(function ItemIn
                 inputRef={(el) => el?.setAttribute('data-cell', `i${i}-0`)}
                 onChange={(t) => update(i, { text: t, item: null })}
                 onPick={(o) => pickItem(i, items.find((x) => x.id === o.id)!)}
-                onEmptyEnter={() => (i >= 1 ? finish() : toast('Select an item', 'err'))}
+                onEmptyEnter={() => (i >= 1 ? finish() : false)}
                 onNoMatch={(t) => {
                   const code = t.trim().toLowerCase();
                   const hit = code ? items.find((x) => x.alias && x.alias.toLowerCase() === code) : undefined;

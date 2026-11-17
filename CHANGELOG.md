@@ -4,6 +4,16 @@ All notable changes to TallyBook are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-17
+
+### Added
+- POS receipt printing.
+
+### Fixed
+- Pressing Enter on an empty list field (Taxability, Percentage of calculation, State, Registration type and other pickers) now picks the highlighted item instead of skipping the field.
+- In vouchers, Enter on the first empty Account/item/employee row picks the highlighted entry instead of showing "Select a ledger".
+- List panels no longer change the highlighted row when the mouse pointer is only resting over them; the highlight follows real mouse movement.
+
 ## [0.3.0] - 2026-11-03
 
 ### Added
