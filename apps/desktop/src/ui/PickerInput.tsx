@@ -91,7 +91,7 @@ export function PickerInput(p: Props) {
         p.onPick(o);
       } else p.onNoMatch?.(p.value);
     } else if (e.key === 'Escape' && open) {
-      stop();
+      // Close the list but let the event reach the screen so a single Esc exits it.
       setOpen(false);
     } else if (e.altKey && e.code === 'KeyC' && p.onCreate) {
       stop();

@@ -47,10 +47,8 @@ export function ListPanel({
               ref={(el) => {
                 if (el && i === sel) el.scrollIntoView({ block: 'nearest' });
               }}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                onPick(i);
-              }}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onPick(i)}
               onMouseMove={() => {
                 if (i !== sel) onHover?.(i);
               }}

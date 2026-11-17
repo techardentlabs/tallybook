@@ -4,6 +4,12 @@ All notable changes to TallyBook are recorded here. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-17
+
+### Fixed
+- Clicking a row in a list panel now picks it on mouse click (as menus do) instead of on button press, for Windows.
+- Esc now leaves a screen in one press even when a list is open; before, the first Esc only closed the list.
+
 ## [0.3.1] - 2026-11-17
 
 ### Added
